@@ -4,6 +4,7 @@
 use std::io;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
 use crate::event::{LoopEvent, events_to_jsonl};
@@ -47,6 +48,8 @@ pub struct StepOutcome {
     pub review_verdict: Option<ReviewVerdict>,
     /// Per-file changes a write step made to the workspace.
     pub changes: Vec<FileChange>,
+    /// Wall-clock time the step took, in milliseconds.
+    pub duration_ms: u64,
 }
 
 /// The result of executing a whole loop.
@@ -57,6 +60,8 @@ pub struct LoopRun {
     pub outcomes: Vec<StepOutcome>,
     /// True if the loop stopped early on a blocking gate.
     pub halted: bool,
+    /// Total wall-clock time of the run, in milliseconds.
+    pub total_ms: u64,
 }
 
 impl LoopRun {
@@ -79,7 +84,8 @@ impl LoopRun {
         out.push_str("# Loope Run Report\n\n");
         out.push_str(&format!("- Run: {}\n", self.run_id));
         out.push_str(&format!("- Requirement: {}\n", self.requirement));
-        out.push_str(&format!("- Outcome: {outcome}\n\n"));
+        out.push_str(&format!("- Outcome: {outcome}\n"));
+        out.push_str(&format!("- Took: {}\n\n", fmt_duration(self.total_ms)));
         out.push_str("## Steps\n\n");
 
         for o in &self.outcomes {
@@ -92,6 +98,7 @@ impl LoopRun {
                 status
             ));
             out.push_str(&format!("   - Gate: {}\n", o.gate));
+            out.push_str(&format!("   - Took: {}\n", fmt_duration(o.duration_ms)));
             out.push_str(&format!("   - Gate result: {}\n", o.gate_notes));
             if let Some(verdict) = &o.review_verdict {
                 out.push_str(&format!(
@@ -163,6 +170,7 @@ pub fn execute_plan(
 ) -> io::Result<LoopRun> {
     atomic_write(&workspace.root.join("plan.md"), &plan.to_markdown())?;
 
+    let run_started = Instant::now();
     let mut outcomes = Vec::new();
     let mut halted = false;
 
@@ -269,6 +277,7 @@ pub fn execute_plan(
         let before_content = (!read_only && !is_command_verify)
             .then(|| content_snapshot(&workspace.workspace_dir));
 
+        let step_started = Instant::now();
         let result = if is_command_verify {
             // A real check command stands in for the verifier agent.
             run_verify_command(
@@ -360,6 +369,7 @@ pub fn execute_plan(
             gate_notes,
             review_verdict: None,
             changes,
+            duration_ms: step_started.elapsed().as_millis() as u64,
         };
         if let Some(observer) = observer {
             observer.on_step_finish(&outcome);
@@ -377,6 +387,7 @@ pub fn execute_plan(
         requirement: plan.requirement.clone(),
         outcomes,
         halted,
+        total_ms: run_started.elapsed().as_millis() as u64,
     };
 
     atomic_write(&workspace.root.join("report.md"), &run.to_report_markdown())?;
@@ -409,10 +420,12 @@ fn run_reviewer(
         read_only: true,
     };
     let mut events: Vec<LoopEvent> = Vec::new();
+    let step_started = Instant::now();
     let result = {
         let mut sink = |event: LoopEvent| events.push(event);
         invoker.invoke_streaming(&invocation, &mut sink)
     };
+    let duration_ms = step_started.elapsed().as_millis() as u64;
 
     let agent_dir = workspace.agent_dir(step.role, step.adapter);
     atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
@@ -433,6 +446,7 @@ fn run_reviewer(
         gate_notes,
         review_verdict: Some(verdict),
         changes: Vec::new(),
+        duration_ms,
     })
 }
 
@@ -598,6 +612,16 @@ fn render_result(result: &InvocationResult) -> String {
 /// First line of a possibly multi-line message.
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("").trim()
+}
+
+/// Format a millisecond duration: `m:ss` for ≥1s, else `NNNms`.
+fn fmt_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        let secs = ms / 1000;
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
 }
 
 /// Minimal JSON string escaping for hand-rolled `run.json`.

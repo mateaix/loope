@@ -136,15 +136,22 @@ the `∞` loop glyph and a `design → implement → review → verify` pipeline
 logo's palette (Claude blue, Codex orange).
 
 While a step runs, Loope streams the agent's actions as a **live activity feed** —
-parsed from each CLI's event stream — so you can see what it's doing:
+parsed from each CLI's event stream — under an animated status line that shows a
+spinner, the elapsed time, the last action, and overall progress, updating ~10×/s even
+while the agent is quiet:
 
 ```text
   ▸ 1 implementer · Claude
       ✎ edit   src/lib.rs
       ▸ run    cargo build
       › Added multiply(a, b) with a test.
-  ✓ 1 implementer · Claude   src/lib.rs +12 −0
+  ⠹ implementer · Claude   0:42   ▸ run cargo build        [1/4]   ← live, animated
+  ✓ 1 implementer · Claude   0:51   src/lib.rs +12 −0              ← committed on finish
 ```
+
+The final summary and `show` carry each step's duration and the run's total time.
+`--no-progress` keeps the committed lines but drops the animation; colors downgrade to
+256-color when the terminal lacks truecolor.
 
 After each write step, the **changed files and `+/−` line stats** are shown live and in
 the report; a unified diff is persisted to `agents/<step>/changes.diff`. View it with:
@@ -196,6 +203,7 @@ exercise the real agents manually:
 - [Review Orchestration Spec](docs/specs/2026-06-28-loope-review-orchestration-spec.md)
 - [CLI UX Spec](docs/specs/2026-06-28-loope-cli-ux-spec.md)
 - [Live Execution Visibility Spec](docs/specs/2026-06-28-loope-live-visibility-spec.md)
+- [Live Terminal Rendering Spec](docs/specs/2026-06-28-loope-live-rendering-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)

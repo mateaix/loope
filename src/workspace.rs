@@ -284,11 +284,15 @@ pub fn compute_file_diffs(
                 }
             }
             (None, Some(a)) => {
-                let unified: String = a.lines().map(|l| format!("+{l}\n")).collect();
+                let count = a.lines().count();
+                let mut unified = format!("@@ -0,0 +1,{count} @@\n");
+                for line in a.lines() {
+                    unified.push_str(&format!("+{line}\n"));
+                }
                 FileDiff {
                     change: FileChange {
                         path: path.clone(),
-                        added: a.lines().count(),
+                        added: count,
                         removed: 0,
                         binary: false,
                     },
@@ -296,12 +300,16 @@ pub fn compute_file_diffs(
                 }
             }
             (Some(b), None) => {
-                let unified: String = b.lines().map(|l| format!("-{l}\n")).collect();
+                let count = b.lines().count();
+                let mut unified = format!("@@ -1,{count} +0,0 @@\n");
+                for line in b.lines() {
+                    unified.push_str(&format!("-{line}\n"));
+                }
                 FileDiff {
                     change: FileChange {
                         path: path.clone(),
                         added: 0,
-                        removed: b.lines().count(),
+                        removed: count,
                         binary: false,
                     },
                     unified,
@@ -341,8 +349,22 @@ pub fn render_diffs(diffs: &[FileDiff]) -> String {
     out
 }
 
-/// Line-based diff returning (added, removed, unified-body). Uses an LCS for normal
-/// files and a cheap multiset count for very large ones.
+/// One line of a diff: tag (' ' context, '-' removed, '+' added) and 1-based line
+/// numbers in the old and new files.
+struct DiffOp {
+    tag: char,
+    text: String,
+    old_no: usize,
+    new_no: usize,
+}
+
+/// Lines of unchanged context kept around each change in a hunk.
+const DIFF_CONTEXT: usize = 3;
+/// Max body lines emitted per file before collapsing the tail.
+const DIFF_MAX_LINES: usize = 400;
+
+/// Line-based diff returning (added, removed, unified-with-hunks). Uses an LCS for
+/// normal files and a cheap multiset count for very large ones.
 pub fn diff_lines(before: &str, after: &str) -> (usize, usize, String) {
     let a: Vec<&str> = before.lines().collect();
     let b: Vec<&str> = after.lines().collect();
@@ -351,8 +373,15 @@ pub fn diff_lines(before: &str, after: &str) -> (usize, usize, String) {
         return cheap_diff(&a, &b);
     }
 
+    let ops = lcs_ops(&a, &b);
+    let added = ops.iter().filter(|o| o.tag == '+').count();
+    let removed = ops.iter().filter(|o| o.tag == '-').count();
+    (added, removed, format_hunks(&ops))
+}
+
+/// Backtrack an LCS into an ordered list of context/removed/added lines.
+fn lcs_ops(a: &[&str], b: &[&str]) -> Vec<DiffOp> {
     let (n, m) = (a.len(), b.len());
-    // lcs[i][j] = length of the longest common subsequence of a[i..] and b[j..].
     let mut lcs = vec![vec![0usize; m + 1]; n + 1];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -364,35 +393,78 @@ pub fn diff_lines(before: &str, after: &str) -> (usize, usize, String) {
         }
     }
 
+    let mut ops = Vec::new();
     let (mut i, mut j) = (0, 0);
-    let (mut added, mut removed) = (0, 0);
-    let mut out = String::new();
     while i < n && j < m {
         if a[i] == b[j] {
-            out.push_str(&format!(" {}\n", a[i]));
+            ops.push(DiffOp { tag: ' ', text: a[i].to_string(), old_no: i + 1, new_no: j + 1 });
             i += 1;
             j += 1;
         } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-            out.push_str(&format!("-{}\n", a[i]));
-            removed += 1;
+            ops.push(DiffOp { tag: '-', text: a[i].to_string(), old_no: i + 1, new_no: 0 });
             i += 1;
         } else {
-            out.push_str(&format!("+{}\n", b[j]));
-            added += 1;
+            ops.push(DiffOp { tag: '+', text: b[j].to_string(), old_no: 0, new_no: j + 1 });
             j += 1;
         }
     }
     while i < n {
-        out.push_str(&format!("-{}\n", a[i]));
-        removed += 1;
+        ops.push(DiffOp { tag: '-', text: a[i].to_string(), old_no: i + 1, new_no: 0 });
         i += 1;
     }
     while j < m {
-        out.push_str(&format!("+{}\n", b[j]));
-        added += 1;
+        ops.push(DiffOp { tag: '+', text: b[j].to_string(), old_no: 0, new_no: j + 1 });
         j += 1;
     }
-    (added, removed, out)
+    ops
+}
+
+/// Group ops into `@@`-delimited hunks with surrounding context, collapsing the tail
+/// if the diff is very large.
+fn format_hunks(ops: &[DiffOp]) -> String {
+    let changed: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.tag != ' ')
+        .map(|(i, _)| i)
+        .collect();
+    if changed.is_empty() {
+        return String::new();
+    }
+
+    // Build the inclusive [start, end] op ranges each hunk covers, merging overlaps.
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &c in &changed {
+        let lo = c.saturating_sub(DIFF_CONTEXT);
+        let hi = (c + DIFF_CONTEXT).min(ops.len() - 1);
+        match ranges.last_mut() {
+            Some(last) if lo <= last.1 + 1 => last.1 = last.1.max(hi),
+            _ => ranges.push((lo, hi)),
+        }
+    }
+
+    let mut out = String::new();
+    let mut emitted = 0usize;
+    for (lo, hi) in ranges {
+        let slice = &ops[lo..=hi];
+        let old_start = slice.iter().find(|o| o.old_no != 0).map(|o| o.old_no).unwrap_or(0);
+        let new_start = slice.iter().find(|o| o.new_no != 0).map(|o| o.new_no).unwrap_or(0);
+        let old_count = slice.iter().filter(|o| o.tag != '+').count();
+        let new_count = slice.iter().filter(|o| o.tag != '-').count();
+        out.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+        for op in slice {
+            if emitted >= DIFF_MAX_LINES {
+                let remaining = ops.len() - lo;
+                out.push_str(&format!("… +{remaining} more lines\n"));
+                return out;
+            }
+            out.push_str(&format!("{}{}\n", op.tag, op.text));
+            emitted += 1;
+        }
+    }
+    out
 }
 
 /// Count-only diff for files too large for the LCS table.
@@ -538,6 +610,7 @@ mod tests {
         let (added, removed, unified) = diff_lines(before, after);
         assert_eq!(removed, 1); // b
         assert_eq!(added, 2); // B and d
+        assert!(unified.contains("@@")); // hunk header
         assert!(unified.contains("-b"));
         assert!(unified.contains("+B"));
         assert!(unified.contains("+d"));

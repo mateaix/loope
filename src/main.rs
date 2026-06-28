@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
+mod theme;
 mod ui;
 
 use loope::executor::{ExecuteOptions, StepObserver, execute_plan};
@@ -63,7 +64,9 @@ fn cmd_run(args: &mut Vec<String>) {
     let include_design = remove_flag(args, "--design");
     let isolate_home = remove_flag(args, "--isolate-home");
     let quiet = remove_flag(args, "--quiet");
+    let no_progress = remove_flag(args, "--no-progress");
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
+    apply_color_level(color);
     let approve = remove_value(args, "--approve").unwrap_or_else(|| "auto".to_string());
     let workdir = remove_value(args, "--workdir");
     let verify_command = remove_value(args, "--verify-cmd");
@@ -135,16 +138,34 @@ fn cmd_run(args: &mut Vec<String>) {
         Box::new(SubprocessInvoker { isolate_home })
     };
     let options = ExecuteOptions { verify_command };
-    let pretty = PrettyObserver { quiet };
-    let observer: Option<&dyn StepObserver> = if color { Some(&pretty) } else { None };
+
+    // Live mode (TTY color, progress on) animates a pinned status line; otherwise the
+    // committed-only PrettyObserver, or nothing in plain/piped output.
+    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(plan.steps.len()));
+    let live_obs = renderer.as_ref().map(|r| ui::LiveObserver::new(r.sender()));
+    let pretty = (color && no_progress).then_some(PrettyObserver { quiet });
+    let observer: Option<&dyn StepObserver> = if let Some(o) = &live_obs {
+        Some(o)
+    } else if let Some(p) = &pretty {
+        Some(p)
+    } else {
+        None
+    };
 
     let run = match execute_plan(&plan, &workspace, invoker.as_ref(), &options, observer) {
         Ok(run) => run,
         Err(err) => {
+            if let Some(r) = renderer {
+                r.stop();
+            }
             eprintln!("run failed: {err}");
             process::exit(1);
         }
     };
+
+    if let Some(r) = renderer {
+        r.stop();
+    }
 
     ui::print_report(&run.to_report_markdown(), Some(&workspace.root), color);
 
@@ -155,6 +176,7 @@ fn cmd_run(args: &mut Vec<String>) {
 
 fn cmd_runs(args: &mut Vec<String>) {
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
+    apply_color_level(color);
     let cwd = current_dir_or_exit();
     let base = cwd.join(".loope").join("runs");
     let mut ids = match list_run_ids(&base) {
@@ -192,6 +214,7 @@ fn read_run_summary(run_dir: &Path) -> Option<ui::RunSummary> {
 
 fn cmd_show(args: &mut Vec<String>) {
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
+    apply_color_level(color);
     let show_diff = remove_flag(args, "--diff");
     let Some(run_id) = args.first() else {
         eprintln!("loope show requires a run id, e.g. loope show run-0001");
@@ -279,6 +302,16 @@ fn list_run_ids(base: &Path) -> io::Result<Vec<String>> {
         }
     }
     Ok(ids)
+}
+
+/// Resolve and store the process-wide color level from the `color` decision.
+fn apply_color_level(color: bool) {
+    let level = if color {
+        theme::detect_enabled_level()
+    } else {
+        theme::ColorLevel::None
+    };
+    theme::set_level(level);
 }
 
 fn current_dir_or_exit() -> PathBuf {
@@ -412,6 +445,7 @@ run flags:
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).
   --quiet         Suppress the live activity feed; keep step results and summary.
+  --no-progress   Disable the animated status line (keep committed step lines).
   --color WHEN    'auto' (default), 'always', or 'never' for terminal coloring.
 
 show flags:

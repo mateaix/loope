@@ -6,6 +6,9 @@
 //! back to plain output.
 
 use std::io::{IsTerminal, Write, stdout};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use loope::event::{ActionKind, LoopEvent};
 use loope::executor::{StepObserver, StepOutcome};
@@ -46,9 +49,9 @@ impl ColorChoice {
     }
 }
 
-/// Truecolor foreground escape.
+/// Foreground escape for a brand RGB color at the active color level.
 fn fg(r: u8, g: u8, b: u8) -> String {
-    format!("\x1b[38;2;{r};{g};{b}m")
+    crate::theme::rgb(r, g, b)
 }
 
 /// Brand color for an adapter: Claude blue, Codex orange, others neutral.
@@ -200,6 +203,278 @@ fn change_stats(changes: &[FileChange]) -> String {
     format!("  {}", parts.join(&format!("{DIM}, {RESET}")))
 }
 
+/// Spinner frames for the live status line.
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Messages the live renderer consumes from the executor's observer.
+pub enum RenderMsg {
+    StepStart {
+        id: usize,
+        role: Role,
+        adapter: Adapter,
+    },
+    Action {
+        kind: ActionKind,
+        target: String,
+    },
+    Message {
+        text: String,
+    },
+    StepFinish {
+        id: usize,
+        role: Role,
+        adapter: Adapter,
+        passed: bool,
+        notes: String,
+        changes: Vec<FileChange>,
+    },
+    Stop,
+}
+
+/// Owns terminal output during a run: a ticker thread animates a pinned live status
+/// line while completed lines are committed to scrollback.
+pub struct LiveRenderer {
+    tx: Sender<RenderMsg>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LiveRenderer {
+    /// Start the renderer for a run of `total` steps.
+    pub fn start(total: usize) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || render_loop(rx, total));
+        Self {
+            tx,
+            handle: Some(handle),
+        }
+    }
+
+    /// A sender the observer uses to feed events.
+    pub fn sender(&self) -> Sender<RenderMsg> {
+        self.tx.clone()
+    }
+
+    /// Stop the renderer, clearing the live line, and join its thread.
+    pub fn stop(mut self) {
+        let _ = self.tx.send(RenderMsg::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// The currently running step, for the animated live line.
+struct Current {
+    id: usize,
+    role: Role,
+    adapter: Adapter,
+    start: Instant,
+    last_action: Option<String>,
+}
+
+/// The render loop: redraw the live line ~10×/s, commit finished lines to scrollback.
+fn render_loop(rx: Receiver<RenderMsg>, total: usize) {
+    let mut current: Option<Current> = None;
+    let mut live_drawn = false;
+    let mut frame = 0usize;
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(RenderMsg::StepStart { id, role, adapter }) => {
+                commit(&mut live_drawn, &step_header(id, role, adapter));
+                current = Some(Current {
+                    id,
+                    role,
+                    adapter,
+                    start: Instant::now(),
+                    last_action: None,
+                });
+                redraw(&mut live_drawn, frame, current.as_ref(), total);
+            }
+            Ok(RenderMsg::Action { kind, target }) => {
+                commit(&mut live_drawn, &action_line(kind, &target));
+                if let Some(c) = current.as_mut() {
+                    c.last_action = Some(format!("{} {}", kind.label(), target));
+                }
+                redraw(&mut live_drawn, frame, current.as_ref(), total);
+            }
+            Ok(RenderMsg::Message { text }) => {
+                commit(&mut live_drawn, &format!("      {DIM}› {text}{RESET}"));
+                redraw(&mut live_drawn, frame, current.as_ref(), total);
+            }
+            Ok(RenderMsg::StepFinish {
+                id,
+                role,
+                adapter,
+                passed,
+                notes,
+                changes,
+            }) => {
+                let elapsed = current.as_ref().map(|c| c.start.elapsed()).unwrap_or_default();
+                clear_live(&mut live_drawn);
+                commit(
+                    &mut live_drawn,
+                    &finish_line(id, role, adapter, passed, &notes, &changes, elapsed),
+                );
+                current = None;
+            }
+            Ok(RenderMsg::Stop) => {
+                clear_live(&mut live_drawn);
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                frame = frame.wrapping_add(1);
+                if current.is_some() {
+                    redraw(&mut live_drawn, frame, current.as_ref(), total);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                clear_live(&mut live_drawn);
+                break;
+            }
+        }
+    }
+}
+
+/// Print a line into scrollback above the live region.
+fn commit(live_drawn: &mut bool, line: &str) {
+    let mut out = stdout().lock();
+    if *live_drawn {
+        let _ = write!(out, "\r\x1b[2K");
+    }
+    let _ = writeln!(out, "{line}");
+    *live_drawn = false;
+    let _ = out.flush();
+}
+
+/// Clear the live line if drawn.
+fn clear_live(live_drawn: &mut bool) {
+    if *live_drawn {
+        let mut out = stdout().lock();
+        let _ = write!(out, "\r\x1b[2K");
+        let _ = out.flush();
+        *live_drawn = false;
+    }
+}
+
+/// Repaint the live line in place.
+fn redraw(live_drawn: &mut bool, frame: usize, current: Option<&Current>, total: usize) {
+    let Some(c) = current else {
+        return;
+    };
+    let mut out = stdout().lock();
+    let _ = write!(out, "\r\x1b[2K{}", live_line(c, frame, total));
+    let _ = out.flush();
+    *live_drawn = true;
+}
+
+fn live_line(c: &Current, frame: usize, total: usize) -> String {
+    let blue = fg(28, 155, 240);
+    let spin = SPINNER[frame % SPINNER.len()];
+    let elapsed = fmt_elapsed(c.start.elapsed());
+    let action = c.last_action.clone().unwrap_or_default();
+    format!(
+        "  {blue}{spin}{RESET} {role:<11} {DIM}·{RESET} {ac}{ag}{RESET}  {DIM}{elapsed}{RESET}  {DIM}{action}{RESET}  {DIM}[{id}/{total}]{RESET}",
+        role = c.role.as_str(),
+        ac = adapter_color(c.adapter),
+        ag = c.adapter.display_name(),
+        id = c.id,
+    )
+}
+
+fn step_header(id: usize, role: Role, adapter: Adapter) -> String {
+    let blue = fg(28, 155, 240);
+    format!(
+        "\n  {blue}▸{RESET} {DIM}{id}{RESET} {role:<11} {DIM}·{RESET} {ac}{ag}{RESET}",
+        role = role.as_str(),
+        ac = adapter_color(adapter),
+        ag = adapter.display_name(),
+    )
+}
+
+fn action_line(kind: ActionKind, target: &str) -> String {
+    format!(
+        "      {DIM}{icon} {label:<6}{RESET} {DIM}{target}{RESET}",
+        icon = action_icon(kind),
+        label = kind.label(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_line(
+    id: usize,
+    role: Role,
+    adapter: Adapter,
+    passed: bool,
+    notes: &str,
+    changes: &[FileChange],
+    elapsed: Duration,
+) -> String {
+    let (icon, (r, g, b)) = if passed { ("✓", GREEN) } else { ("✗", RED) };
+    format!(
+        "  {sc}{icon}{RESET} {DIM}{id}{RESET} {role:<11} {ac}{ag}{RESET}  {DIM}{el}{RESET}  {DIM}{notes}{RESET}{stats}",
+        sc = fg(r, g, b),
+        role = role.as_str(),
+        ac = adapter_color(adapter),
+        ag = adapter.display_name(),
+        el = fmt_elapsed(elapsed),
+        stats = change_stats(changes),
+    )
+}
+
+/// Format a duration as `m:ss`.
+fn fmt_elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// A [`StepObserver`] that forwards events to a [`LiveRenderer`].
+pub struct LiveObserver {
+    tx: Sender<RenderMsg>,
+}
+
+impl LiveObserver {
+    pub fn new(tx: Sender<RenderMsg>) -> Self {
+        Self { tx }
+    }
+}
+
+impl StepObserver for LiveObserver {
+    fn on_step_start(&self, step: &LoopStep) {
+        let _ = self.tx.send(RenderMsg::StepStart {
+            id: step.id,
+            role: step.role,
+            adapter: step.adapter,
+        });
+    }
+
+    fn on_event(&self, event: &LoopEvent) {
+        match event {
+            LoopEvent::Action { kind, target } => {
+                let _ = self.tx.send(RenderMsg::Action {
+                    kind: *kind,
+                    target: target.clone(),
+                });
+            }
+            LoopEvent::Message { text } => {
+                let _ = self.tx.send(RenderMsg::Message { text: text.clone() });
+            }
+            LoopEvent::Model { .. } | LoopEvent::Usage { .. } => {}
+        }
+    }
+
+    fn on_step_finish(&self, outcome: &StepOutcome) {
+        let _ = self.tx.send(RenderMsg::StepFinish {
+            id: outcome.step_id,
+            role: outcome.role,
+            adapter: outcome.adapter,
+            passed: outcome.gate_passed,
+            notes: outcome.gate_notes.clone(),
+            changes: outcome.changes.clone(),
+        });
+    }
+}
+
 /// Render a Loope report. In plain mode the markdown is printed verbatim (so piping
 /// and tests are unchanged); in color mode it becomes a summary box plus a colored
 /// per-step recap. Used by both `run` (final output) and `show`.
@@ -217,21 +492,40 @@ pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
 
     let mut run_id = String::new();
     let mut outcome = String::new();
+    let mut total = String::new();
+    let mut seen_steps = false;
     for line in md.lines() {
+        if line.starts_with("## Steps") {
+            seen_steps = true;
+        }
         if let Some(value) = line.strip_prefix("- Run: ") {
             run_id = value.trim().to_string();
         } else if let Some(value) = line.strip_prefix("- Outcome: ") {
             outcome = value.trim().to_string();
+        } else if !seen_steps {
+            // the run-level (not per-step) "Took" appears before the Steps section
+            if let Some(value) = line.strip_prefix("- Took: ") {
+                total = value.trim().to_string();
+            }
         }
     }
 
     let passed = outcome.contains("all gates passed");
     let accent = if passed { GREEN } else { RED };
-    let title = format!(
-        "∞ {} · {}",
-        if run_id.is_empty() { "run" } else { &run_id },
-        outcome
-    );
+    let title = if total.is_empty() {
+        format!(
+            "∞ {} · {}",
+            if run_id.is_empty() { "run" } else { &run_id },
+            outcome
+        )
+    } else {
+        format!(
+            "∞ {} · {} · {}",
+            if run_id.is_empty() { "run" } else { &run_id },
+            outcome,
+            total
+        )
+    };
     print_box(&title, accent);
 
     for step in parse_steps(md) {
@@ -247,6 +541,9 @@ pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
         }
         if !step.changes.is_empty() {
             note = format!("{note} · {}", step.changes.join(", "));
+        }
+        if let Some(took) = step.took {
+            note = format!("{note}  {took}");
         }
         println!(
             "  {sc}{icon}{RESET} {DIM}{num}{RESET} {role:<11} {DIM}·{RESET} {ac}{adapter}{RESET}  {DIM}{note}{RESET}",
@@ -282,6 +579,7 @@ struct StepLine {
     gate_result: String,
     verdict: Option<String>,
     changes: Vec<String>,
+    took: Option<String>,
 }
 
 /// Parse the `## Steps` section of a Loope report markdown.
@@ -301,6 +599,7 @@ fn parse_steps(md: &str) -> Vec<StepLine> {
                 gate_result: String::new(),
                 verdict: None,
                 changes: Vec::new(),
+                took: None,
             });
         } else if let Some(step) = current.as_mut() {
             let trimmed = line.trim();
@@ -310,6 +609,8 @@ fn parse_steps(md: &str) -> Vec<StepLine> {
                 step.verdict = Some(value.trim().to_string());
             } else if let Some(value) = trimmed.strip_prefix("- Changed: ") {
                 step.changes.push(value.trim().to_string());
+            } else if let Some(value) = trimmed.strip_prefix("- Took: ") {
+                step.took = Some(value.trim().to_string());
             }
         }
     }
@@ -363,8 +664,8 @@ impl RunSummary {
     }
 }
 
-/// Print a unified diff, colored on a TTY (additions green, removals red, headers
-/// bold/dim).
+/// Print a unified diff. In plain mode the text is printed verbatim. On a TTY each
+/// hunk gets a line-number gutter, with additions green and removals red.
 pub fn print_diff(diff: &str, color: bool) {
     if !color {
         print!("{diff}");
@@ -375,19 +676,46 @@ pub fn print_diff(diff: &str, color: bool) {
     }
     let green = fg(GREEN.0, GREEN.1, GREEN.2);
     let red = fg(RED.0, RED.1, RED.2);
+    let blue = fg(28, 155, 240);
+    // Track line numbers within the current hunk, seeded from each `@@` header.
+    let mut old_no = 0usize;
+    let mut new_no = 0usize;
     for line in diff.lines() {
         if line.starts_with("diff ") {
             println!("  {BOLD}{line}{RESET}");
         } else if line.starts_with("+++") || line.starts_with("---") {
             println!("  {DIM}{line}{RESET}");
-        } else if line.starts_with('+') {
-            println!("  {green}{line}{RESET}");
-        } else if line.starts_with('-') {
-            println!("  {red}{line}{RESET}");
+        } else if line.starts_with("@@") {
+            if let Some((o, n)) = parse_hunk_header(line) {
+                old_no = o;
+                new_no = n;
+            }
+            println!("  {blue}{line}{RESET}");
+        } else if let Some(rest) = line.strip_prefix('+') {
+            println!("  {DIM}{:>4} {RESET}{green}+{rest}{RESET}", new_no);
+            new_no += 1;
+        } else if let Some(rest) = line.strip_prefix('-') {
+            println!("  {DIM}{:>4} {RESET}{red}-{rest}{RESET}", old_no);
+            old_no += 1;
+        } else if let Some(rest) = line.strip_prefix(' ') {
+            println!("  {DIM}{:>4} {RESET} {DIM}{rest}{RESET}", new_no);
+            old_no += 1;
+            new_no += 1;
         } else {
             println!("  {DIM}{line}{RESET}");
         }
     }
+}
+
+/// Parse the starting old/new line numbers from a `@@ -a,b +c,d @@` header.
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let inner = line.trim_start_matches('@').trim();
+    let mut parts = inner.split_whitespace();
+    let old = parts.next()?.trim_start_matches('-');
+    let new = parts.next()?.trim_start_matches('+');
+    let old_n = old.split(',').next()?.parse().ok()?;
+    let new_n = new.split(',').next()?.parse().ok()?;
+    Some((old_n, new_n))
 }
 
 /// Render the `runs` listing, with each run's outcome and step count when known.
@@ -432,6 +760,13 @@ mod tests {
         assert!(!blocked.3);
         assert!(parse_step_header("   - Gate: something").is_none());
         assert!(parse_step_header("# Loope Run Report").is_none());
+    }
+
+    #[test]
+    fn parses_hunk_header_line_numbers() {
+        assert_eq!(parse_hunk_header("@@ -12,3 +15,4 @@"), Some((12, 15)));
+        assert_eq!(parse_hunk_header("@@ -0,0 +1,3 @@"), Some((0, 1)));
+        assert_eq!(parse_hunk_header("not a hunk"), None);
     }
 
     #[test]
