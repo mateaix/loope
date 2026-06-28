@@ -278,17 +278,52 @@ fn adapter_color_by_name(name: &str) -> String {
     }
 }
 
-/// Render the `runs` listing.
-pub fn runs_list(ids: &[String], color: bool) {
+/// One run's at-a-glance outcome for the `runs` listing.
+pub struct RunSummary {
+    pub passed: bool,
+    pub halted: bool,
+    pub steps: usize,
+}
+
+impl RunSummary {
+    fn label(&self) -> &'static str {
+        if self.passed {
+            "all gates passed"
+        } else if self.halted {
+            "halted on a blocking gate"
+        } else {
+            "completed with gate failures"
+        }
+    }
+}
+
+/// Render the `runs` listing, with each run's outcome and step count when known.
+pub fn runs_list(items: &[(String, Option<RunSummary>)], color: bool) {
     if !color {
-        for id in ids {
-            println!("{id}");
+        for (id, summary) in items {
+            match summary {
+                Some(s) => println!("{id}  {}  ({} steps)", s.label(), s.steps),
+                None => println!("{id}"),
+            }
         }
         return;
     }
+
     let blue = fg(28, 155, 240);
-    for id in ids {
-        println!("  {blue}∞{RESET} {id}");
+    for (id, summary) in items {
+        match summary {
+            Some(s) => {
+                let (r, g, b) = if s.passed { GREEN } else { RED };
+                let icon = if s.passed { "✓" } else { "✗" };
+                println!(
+                    "  {blue}∞{RESET} {id}  {sc}{icon}{RESET} {label}  {DIM}({steps} steps){RESET}",
+                    sc = fg(r, g, b),
+                    label = s.label(),
+                    steps = s.steps,
+                );
+            }
+            None => println!("  {blue}∞{RESET} {id}"),
+        }
     }
 }
 

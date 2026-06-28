@@ -109,6 +109,9 @@ fn runs_and_show_report_a_produced_run() {
     assert!(runs.status.success());
     let runs_out = String::from_utf8(runs.stdout).unwrap();
     assert!(runs_out.contains("run-0001"));
+    // the listing now shows each run's outcome and step count
+    assert!(runs_out.contains("all gates passed"));
+    assert!(runs_out.contains("steps"));
 
     // show prints its report
     let show = Command::new(exe)

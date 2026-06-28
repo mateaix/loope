@@ -24,7 +24,7 @@ fn main() {
     match args.remove(0).as_str() {
         "plan" => cmd_plan(&mut args),
         "run" => cmd_run(&mut args),
-        "runs" => cmd_runs(),
+        "runs" => cmd_runs(&mut args),
         "show" => cmd_show(&mut args),
         "adapters" => {
             for adapter in list_adapters() {
@@ -151,7 +151,8 @@ fn cmd_run(args: &mut Vec<String>) {
     }
 }
 
-fn cmd_runs() {
+fn cmd_runs(args: &mut Vec<String>) {
+    let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     let cwd = current_dir_or_exit();
     let base = cwd.join(".loope").join("runs");
     let mut ids = match list_run_ids(&base) {
@@ -166,7 +167,25 @@ fn cmd_runs() {
         return;
     }
     ids.sort();
-    ui::runs_list(&ids, ColorChoice::Auto.enabled());
+    let items: Vec<(String, Option<ui::RunSummary>)> = ids
+        .into_iter()
+        .map(|id| {
+            let summary = read_run_summary(&base.join(&id));
+            (id, summary)
+        })
+        .collect();
+    ui::runs_list(&items, color);
+}
+
+/// Read a run's `run.json` for its at-a-glance outcome. Returns `None` when the file
+/// is missing or unreadable.
+fn read_run_summary(run_dir: &Path) -> Option<ui::RunSummary> {
+    let json = fs::read_to_string(run_dir.join("run.json")).ok()?;
+    Some(ui::RunSummary {
+        passed: json.contains("\"all_passed\":true"),
+        halted: json.contains("\"halted\":true"),
+        steps: json.matches("\"gate_passed\":").count(),
+    })
 }
 
 fn cmd_show(args: &mut Vec<String>) {
