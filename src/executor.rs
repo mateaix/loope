@@ -624,12 +624,16 @@ fn run_reviewer(
     atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
     atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
 
-    let verdict = parse_review_verdict(&result.message);
     // A review is a valid artifact whenever it ran; the verdict carries the signal.
-    let (gate_passed, gate_notes) = if result.success {
-        (true, "review produced".to_string())
+    // When the invocation failed there is no verdict to show.
+    let (gate_passed, gate_notes, verdict) = if result.success {
+        (
+            true,
+            "review produced".to_string(),
+            Some(parse_review_verdict(&result.message)),
+        )
     } else {
-        (false, "invocation failed".to_string())
+        (false, "invocation failed".to_string(), None)
     };
 
     Ok(StepOutcome {
@@ -641,7 +645,7 @@ fn run_reviewer(
         gate: step.gate.clone(),
         gate_passed,
         gate_notes,
-        review_verdict: Some(verdict),
+        review_verdict: verdict,
         changes: Vec::new(),
         duration_ms,
         iteration,

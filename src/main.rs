@@ -12,7 +12,7 @@ use loope::stub::StubInvoker;
 use loope::subprocess::SubprocessInvoker;
 use loope::workspace::RunWorkspace;
 use loope::{
-    Adapter, LoopOptions, adapter::Invoker, generate_plan, list_adapters,
+    Adapter, LoopOptions, Role, adapter::Invoker, generate_plan, list_adapters,
 };
 use ui::{ColorChoice, PrettyObserver};
 
@@ -242,7 +242,19 @@ fn cmd_run(args: &mut Vec<String>) {
 
     if color {
         ui::banner(true);
-        ui::pipeline(&plan, true);
+        // One iteration's roles, in order; the ↻ marks that it repeats to convergence.
+        let mut loop_steps: Vec<(Role, Adapter)> = Vec::new();
+        if config.include_design {
+            loop_steps.push((Role::Designer, config.designer));
+        }
+        loop_steps.push((Role::Implementer, config.implementer));
+        for reviewer in &config.reviewers {
+            loop_steps.push((Role::Reviewer, *reviewer));
+        }
+        if config.verify_command.is_some() {
+            loop_steps.push((Role::Verifier, Adapter::Generic));
+        }
+        ui::pipeline(&loop_steps, config.max_iters > 1, true);
     }
 
     let workspace = match RunWorkspace::create(&base, &source, in_place) {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use loope::event::{ActionKind, LoopEvent};
 use loope::executor::{StepObserver, StepOutcome};
 use loope::workspace::FileChange;
-use loope::{Adapter, LoopPlan, LoopStep, Role};
+use loope::{Adapter, LoopStep, Role};
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -81,21 +81,29 @@ pub fn banner(color: bool) {
     }
 }
 
-/// A one-line view of the steps about to run, e.g. `∞  implement -> review -> ...`.
-pub fn pipeline(plan: &LoopPlan, color: bool) {
+/// A one-line view of one iteration, e.g. `∞  implement → review → verify ↻`.
+/// `repeats` appends a loop marker to signal the cycle iterates to convergence.
+pub fn pipeline(steps: &[(Role, Adapter)], repeats: bool, color: bool) {
     if !color {
         return;
     }
     let blue = fg(28, 155, 240);
-    let parts: Vec<String> = plan
-        .steps
+    let parts: Vec<String> = steps
         .iter()
-        .map(|s| {
-            let label = role_verb(s.role);
-            format!("{}{label}{RESET}", adapter_color(s.adapter))
+        .map(|(role, adapter)| {
+            let label = role_verb(*role);
+            format!("{}{label}{RESET}", adapter_color(*adapter))
         })
         .collect();
-    println!("\n  {blue}∞{RESET}  {}", parts.join(&format!("{DIM} → {RESET}")));
+    let loop_mark = if repeats {
+        format!("{DIM} ↻{RESET}")
+    } else {
+        String::new()
+    };
+    println!(
+        "\n  {blue}∞{RESET}  {}{loop_mark}",
+        parts.join(&format!("{DIM} → {RESET}"))
+    );
     println!();
 }
 
@@ -670,11 +678,11 @@ pub struct RunSummary {
 impl RunSummary {
     fn label(&self) -> &'static str {
         if self.passed {
-            "all gates passed"
+            "converged"
         } else if self.halted {
-            "halted on a blocking gate"
+            "halted: a step failed"
         } else {
-            "completed with gate failures"
+            "did not converge (max-iters)"
         }
     }
 }
