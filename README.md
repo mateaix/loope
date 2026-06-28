@@ -51,6 +51,7 @@ cargo run -- adapters
 ```bash
 loope plan "Add billing settings"            # print a loop plan
 loope plan --design "Build settings page"    # print a design-aware plan
+loope design "Build a settings page"         # produce a Design Contract artifact
 loope run --dry-run "Add login"              # execute the loop with stub agents
 loope run "Add login"                        # execute by driving the real CLIs
 loope runs                                   # list past runs
@@ -102,6 +103,7 @@ loop halts with OpenCode's message) rather than a crash.
   plan.md              the generated loop plan
   report.md            final loop report (per-step status + outcome)
   run.json             machine-readable run record
+  design-contract.md   the Design Contract (with --design or `loope design`)
   workspace/           the working tree the agents read and edit
   agents/
     implementer-claude/{home/, prompt.md, transcript.jsonl, result.md}
@@ -211,6 +213,7 @@ exercise the real agents manually:
 - [Live Execution Visibility Spec](docs/specs/2026-06-28-loope-live-visibility-spec.md)
 - [Live Terminal Rendering Spec](docs/specs/2026-06-28-loope-live-rendering-spec.md)
 - [OpenCode Adapter Spec](docs/specs/2026-06-28-loope-opencode-adapter-spec.md)
+- [Design Contract Spec](docs/specs/2026-06-28-loope-design-contract-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)

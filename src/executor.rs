@@ -179,6 +179,7 @@ pub fn execute_plan(
     let mut last_implementer_files: Vec<String> = Vec::new();
     let mut last_review_message: Option<String> = None;
     let mut review_blockers_pending = false;
+    let mut design_contract: Option<String> = None;
 
     let steps = &plan.steps;
     let mut i = 0;
@@ -202,6 +203,7 @@ pub fn execute_plan(
                         last_implementer_message.as_deref(),
                         &last_implementer_files,
                         last_review_message.as_deref(),
+                        design_contract.as_deref(),
                     )
                 })
                 .collect();
@@ -261,6 +263,7 @@ pub fn execute_plan(
             last_implementer_message.as_deref(),
             &last_implementer_files,
             last_review_message.as_deref(),
+            design_contract.as_deref(),
         );
 
         let agent_dir = workspace.agent_dir(step.role, step.adapter);
@@ -338,6 +341,18 @@ pub fn execute_plan(
         } else {
             Vec::new()
         };
+
+        // A successful design step yields the Design Contract: persist it as a run
+        // artifact and inside the workspace, and feed it to downstream prompts.
+        if step.role == Role::Designer && result.success && !result.message.trim().is_empty() {
+            let contract = result.message.clone();
+            atomic_write(&workspace.root.join("design-contract.md"), &contract)?;
+            atomic_write(
+                &workspace.workspace_dir.join("DESIGN_CONTRACT.md"),
+                &contract,
+            )?;
+            design_contract = Some(contract);
+        }
 
         // A second implementer turn that follows a review is a revision. If the review
         // raised no blockers it may legitimately make no change; if it raised blockers,
@@ -508,6 +523,7 @@ fn run_verify_command(command: &str, workspace_dir: &Path) -> InvocationResult {
 }
 
 /// Build a step's prompt from its base prompt plus the relevant upstream artifacts.
+#[allow(clippy::too_many_arguments)]
 fn build_prompt(
     role: Role,
     requirement: &str,
@@ -515,8 +531,23 @@ fn build_prompt(
     last_implementer_message: Option<&str>,
     last_implementer_files: &[String],
     last_review_message: Option<&str>,
+    design_contract: Option<&str>,
 ) -> String {
     let mut prompt = prompt_for_step(step, requirement);
+
+    // The implementer and reviewer work against the design contract when present.
+    if matches!(role, Role::Implementer | Role::Reviewer)
+        && let Some(contract) = design_contract
+    {
+        prompt.push_str("\n\n## Design contract\n\n");
+        prompt.push_str(contract);
+        prompt.push('\n');
+        prompt.push_str(if role == Role::Reviewer {
+            "\nCheck the implementation for consistency with this design contract.\n"
+        } else {
+            "\nImplement against this design contract.\n"
+        });
+    }
 
     match role {
         Role::Reviewer => {
@@ -686,6 +717,37 @@ mod tests {
         let impl_dir = ws.agent_dir(Role::Implementer, Adapter::Claude);
         assert!(impl_dir.join("prompt.md").exists());
         assert!(impl_dir.join("result.md").exists());
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    #[test]
+    fn design_run_writes_contract_and_feeds_implementer() {
+        let base = temp_base("design");
+        let source = temp_base("design-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan(
+            "Build dashboard",
+            LoopOptions {
+                include_design: true,
+                ..LoopOptions::default()
+            },
+        );
+
+        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
+        assert!(run.all_passed());
+
+        // contract persisted as a run artifact and inside the workspace
+        assert!(ws.root.join("design-contract.md").exists());
+        assert!(ws.workspace_dir.join("DESIGN_CONTRACT.md").exists());
+
+        // the implementer's prompt was given the contract
+        let impl_prompt =
+            fs::read_to_string(ws.agent_dir(Role::Implementer, Adapter::Claude).join("prompt.md"))
+                .unwrap();
+        assert!(impl_prompt.contains("## Design contract"));
+        assert!(impl_prompt.contains("Implement against this design contract"));
 
         let _ = fs::remove_dir_all(&base);
         let _ = fs::remove_dir_all(&source);

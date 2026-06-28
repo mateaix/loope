@@ -1,4 +1,13 @@
-use loope::{Adapter, LoopOptions, generate_plan, list_adapters};
+use loope::{Adapter, LoopOptions, generate_design_plan, generate_plan, list_adapters};
+
+#[test]
+fn design_plan_is_a_single_designer_step() {
+    let plan = generate_design_plan("Build dashboard", Adapter::Claude);
+    assert_eq!(plan.steps.len(), 1);
+    assert_eq!(plan.steps[0].role.as_str(), "designer");
+    assert_eq!(plan.steps[0].adapter, Adapter::Claude);
+    assert!(plan.steps[0].expected_artifact.contains("design contract"));
+}
 
 #[test]
 fn default_loop_uses_claude_to_implement_and_codex_to_review() {

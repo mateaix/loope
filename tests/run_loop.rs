@@ -72,15 +72,42 @@ fn design_dry_run_includes_designer_step() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
-    assert!(stdout.contains("designer via Generic"));
+    assert!(stdout.contains("designer via Claude"));
+
+    let run = cwd.join(".loope").join("runs").join("run-0001");
+    assert!(
+        run.join("agents")
+            .join("designer-claude")
+            .join("result.md")
+            .exists()
+    );
+    // the design contract was persisted as a run artifact
+    assert!(run.join("design-contract.md").exists());
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn design_command_produces_a_contract() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("designcmd");
+
+    let output = Command::new(exe)
+        .args(["design", "--dry-run", "Build a settings page"])
+        .current_dir(&cwd)
+        .output()
+        .expect("design loope");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("Design contract"));
+    assert!(stdout.contains("Contract:"));
 
     assert!(
         cwd.join(".loope")
             .join("runs")
             .join("run-0001")
-            .join("agents")
-            .join("designer-generic")
-            .join("result.md")
+            .join("design-contract.md")
             .exists()
     );
 

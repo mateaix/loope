@@ -11,7 +11,9 @@ use loope::executor::{ExecuteOptions, StepObserver, execute_plan};
 use loope::stub::StubInvoker;
 use loope::subprocess::SubprocessInvoker;
 use loope::workspace::RunWorkspace;
-use loope::{Adapter, LoopOptions, adapter::Invoker, generate_plan, list_adapters};
+use loope::{
+    Adapter, LoopOptions, adapter::Invoker, generate_design_plan, generate_plan, list_adapters,
+};
 use ui::{ColorChoice, PrettyObserver};
 
 fn main() {
@@ -24,6 +26,7 @@ fn main() {
 
     match args.remove(0).as_str() {
         "plan" => cmd_plan(&mut args),
+        "design" => cmd_design(&mut args),
         "run" => cmd_run(&mut args),
         "runs" => cmd_runs(&mut args),
         "show" => cmd_show(&mut args),
@@ -56,6 +59,99 @@ fn cmd_plan(args: &mut Vec<String>) {
         },
     );
     println!("{}", plan.to_markdown());
+}
+
+fn cmd_design(args: &mut Vec<String>) {
+    let dry_run = remove_flag(args, "--dry-run");
+    let in_place = remove_flag(args, "--in-place");
+    let isolate_home = remove_flag(args, "--isolate-home");
+    let no_progress = remove_flag(args, "--no-progress");
+    let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
+    apply_color_level(color);
+    let opencode_model = remove_value(args, "--opencode-model")
+        .or_else(|| std::env::var("LOOPE_OPENCODE_MODEL").ok())
+        .filter(|m| !m.trim().is_empty());
+    let workdir = remove_value(args, "--workdir");
+    let designer = remove_adapter(args, "--designer").unwrap_or(Adapter::Claude);
+    let requirement = args.join(" ");
+
+    if requirement.trim().is_empty() {
+        eprintln!("loope design requires a requirement.");
+        process::exit(2);
+    }
+
+    let cwd = current_dir_or_exit();
+    let source = workdir.map(PathBuf::from).unwrap_or_else(|| cwd.clone());
+    if !source.is_dir() {
+        eprintln!("workdir does not exist: {}", source.display());
+        process::exit(2);
+    }
+    let base = cwd.join(".loope").join("runs");
+
+    let plan = generate_design_plan(&requirement, designer);
+
+    if color {
+        ui::banner(true);
+    }
+
+    let workspace = match RunWorkspace::create(&base, &source, in_place) {
+        Ok(ws) => ws,
+        Err(err) => {
+            eprintln!("failed to create run workspace: {err}");
+            process::exit(1);
+        }
+    };
+
+    let invoker: Box<dyn Invoker + Sync> = if dry_run {
+        Box::new(StubInvoker)
+    } else {
+        Box::new(SubprocessInvoker {
+            isolate_home,
+            opencode_model,
+        })
+    };
+
+    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(plan.steps.len()));
+    let live_obs = renderer.as_ref().map(|r| ui::LiveObserver::new(r.sender()));
+    let pretty = (color && no_progress).then_some(PrettyObserver { quiet: false });
+    let observer: Option<&dyn StepObserver> = if let Some(o) = &live_obs {
+        Some(o)
+    } else if let Some(p) = &pretty {
+        Some(p)
+    } else {
+        None
+    };
+
+    let run = match execute_plan(
+        &plan,
+        &workspace,
+        invoker.as_ref(),
+        &ExecuteOptions::default(),
+        observer,
+    ) {
+        Ok(run) => run,
+        Err(err) => {
+            if let Some(r) = renderer {
+                r.stop();
+            }
+            eprintln!("design failed: {err}");
+            process::exit(1);
+        }
+    };
+    if let Some(r) = renderer {
+        r.stop();
+    }
+
+    let contract_path = workspace.root.join("design-contract.md");
+    match fs::read_to_string(&contract_path) {
+        Ok(contract) => println!("\n{}", contract.trim_end()),
+        Err(_) => eprintln!("no design contract was produced"),
+    }
+    println!("\nContract: {}", contract_path.display());
+
+    if !run.all_passed() {
+        process::exit(1);
+    }
 }
 
 fn cmd_run(args: &mut Vec<String>) {
@@ -432,6 +528,7 @@ fn print_help() {
 Usage:
   loope plan <requirement>
   loope plan --design <requirement>
+  loope design [--designer A] <requirement>
   loope run [--design] [--dry-run] [--in-place] [--workdir DIR] [--approve auto|manual] <requirement>
   loope runs
   loope show <run-id>

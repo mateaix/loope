@@ -80,7 +80,7 @@ impl Default for LoopOptions {
             include_design: false,
             implementer: Adapter::Claude,
             reviewers: vec![Adapter::Codex],
-            designer: Adapter::Generic,
+            designer: Adapter::Claude,
             verifier: Adapter::Generic,
         }
     }
@@ -227,6 +227,21 @@ pub fn generate_plan(requirement: &str, options: LoopOptions) -> LoopPlan {
     LoopPlan {
         requirement: clean_requirement,
         steps,
+    }
+}
+
+/// Build a design-only plan: a single designer step that produces a Design Contract.
+pub fn generate_design_plan(requirement: &str, designer: Adapter) -> LoopPlan {
+    LoopPlan {
+        requirement: requirement.trim().to_string(),
+        steps: vec![LoopStep {
+            id: 1,
+            role: Role::Designer,
+            adapter: designer,
+            objective: "Produce a Design Contract for the requirement".to_string(),
+            expected_artifact: "design contract: user flows, states, components, API/data contracts, acceptance criteria".to_string(),
+            gate: "a non-empty design contract is produced".to_string(),
+        }],
     }
 }
 
