@@ -47,6 +47,10 @@ the full documentation layout.
 ## Quick start
 
 ```bash
+./install.sh                       # build + install loope to ~/.cargo/bin
+loope run --dry-run "Add login"    # run the whole loop with stub agents (no CLIs)
+
+# or, from source without installing:
 cargo test
 cargo run -- plan "Add login"
 cargo run -- run --dry-run "Add login"

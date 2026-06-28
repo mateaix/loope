@@ -30,20 +30,31 @@ This is the complete usage reference. For the design rationale, see the
 ## Install
 
 Loope is a Rust 2024 project with **no external dependencies** (standard library only).
+It needs Rust/Cargo ([rustup.rs](https://rustup.rs)).
 
 ```bash
-# build
-cargo build --release           # target/release/loope
+# one-step install to ~/.cargo/bin (builds release, installs, runs a smoke test)
+./install.sh
 
-# or install on PATH
+# or, equivalently
 cargo install --path .          # ~/.cargo/bin/loope
+
+# build without installing
+cargo build --release           # target/release/loope
 
 # run from source without installing
 cargo run -- <command> [args]
 ```
 
+After installing, make sure `~/.cargo/bin` is on your `PATH`.
+
 The deterministic `--dry-run` path needs no agent binaries or network. Real runs need
 the agent CLIs you choose (see [Adapters & providers](#adapters--providers)).
+
+> **Run inside a project directory**, not a shared/system path like `/tmp` — Loope seeds
+> the workspace by copying the current directory, and copying a directory full of other
+> users' files fails with a permission error. Point `--workdir` at your project if you
+> run from elsewhere.
 
 ## Quick start
 
