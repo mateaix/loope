@@ -1,0 +1,16 @@
+[package]
+name = "loope"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Loop Engineering orchestrator for collaborative coding agents."
+
+[lib]
+name = "loope"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loope"
+path = "src/main.rs"
+
+[dependencies]
