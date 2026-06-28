@@ -16,25 +16,30 @@ Loope is a Rust CLI prototype for a new development pattern: **don't ask one age
 
 ## How it works
 
+**The loop actually loops.** A run is an optional design step, then iterations of
+implement → review → verify, repeated with feedback until it converges (verification
+passes and no reviewer blocks) or hits `--max-iters` (default 3).
+
 **Default loop**
 
 ```text
 requirement
   -> Claude implements
-  -> Codex reviews
-  -> Claude revises
-  -> verifier checks
+  -> Codex reviews          ┐
+  -> verifier checks        │ repeat (fix → review → verify) with feedback
+  -> not converged? Claude fixes the blockers and failures …
+  -> converged ✓
 ```
 
 **Design-aware loop**
 
 ```text
 requirement
-  -> Design Contract
+  -> Design Contract (once)
   -> Claude implements against the contract
-  -> Codex reviews code and design consistency
-  -> Claude revises
+  -> Codex reviews code + design consistency (blocks on unmet acceptance criteria)
   -> verifier checks against the contract
+  -> repeat with feedback until converged ✓
 ```
 
 ## Documentation
@@ -65,8 +70,10 @@ loope plan --design "Build settings page"    # print a design-aware plan
 loope design "Build a settings page"         # produce a Design Contract artifact
 loope run --dry-run "Add login"              # execute the loop with stub agents
 loope run "Add login"                        # execute by driving the real CLIs
+loope run --show-diff "Add login"            # …and print the cumulative diff after
 loope runs                                   # list past runs
 loope show run-0001                          # print a past run's report
+loope apply run-0001                         # land a run's changes into your tree
 loope adapters                               # list supported adapters
 ```
 
@@ -76,6 +83,8 @@ loope adapters                               # list supported adapters
 | ------------------------ | ---------------------------------------------------------------- |
 | `--dry-run`              | Execute with deterministic stub agents (no external CLIs/network) |
 | `--design`               | Insert a design-contract step before implementation              |
+| `--max-iters N`          | Cap the implement → review → verify iterations (default `3`; `1` = single pass) |
+| `--show-diff`            | Print the cumulative diff of everything the run changed          |
 | `--workdir DIR`          | Source directory to run against (default: current directory)     |
 | `--in-place`             | Edit the working directory directly instead of a copied tree     |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`)    |
@@ -102,25 +111,30 @@ loop halts with OpenCode's message) rather than a crash.
 1. A run directory is created under `.loope/runs/<run-id>/`.
 2. The working tree is seeded into `workspace/` (a copy by default; `--in-place`
    edits the source directly).
-3. Each step runs through its adapter — each agent in its own private `home/`, the
-   reviewer and verifier read-only — and its prompt, transcript, and result are saved.
-4. The reviewer is given the implementer's result; the gate is checked after every
-   step, and a blocking failure halts the loop.
-5. A final `report.md` and `run.json` are written.
+3. An optional design step runs once, then the loop **iterates** implement → review →
+   verify. Each step runs through its adapter — each agent in its own private `home/`,
+   the reviewer and verifier read-only — and its prompt, transcript, and result are saved.
+4. After each iteration Loope checks **convergence** (verification passed and no reviewer
+   blocked). If not converged, the next iteration's implementer is fed the blockers and
+   verifier failures to fix; the loop repeats until converged or `--max-iters`.
+5. A final `report.md`, `run.json`, and a cumulative `changes.diff` are written; `loope
+   apply <run-id>` lands the changes in your tree.
 
 ### Run directory layout
 
 ```text
 .loope/runs/run-0001/
   plan.md              the generated loop plan
-  report.md            final loop report (per-step status + outcome)
-  run.json             machine-readable run record
+  report.md            final loop report (steps grouped by iteration + outcome)
+  run.json             machine-readable run record (iterations, stop_reason, converged)
+  changes.diff         the run's cumulative diff (original source → final workspace)
+  changed-files.txt    cumulative changed-file listing (used by `loope apply`)
   design-contract.md   the Design Contract (with --design or `loope design`)
   workspace/           the working tree the agents read and edit
-  agents/              one numbered directory per step (the revise turn is its own)
+  agents/              one numbered directory per step, across all iterations
     01-implementer-claude/{home/, prompt.md, transcript.jsonl, events.jsonl, result.md}
     02-reviewer-codex/{home/, prompt.md, transcript.jsonl, result.md}
-    03-implementer-claude/...
+    03-implementer-claude/...   the next iteration's fix turn
     ...
 ```
 
@@ -132,8 +146,8 @@ The review phase is structured and can fan out across agents:
 
 - **Structured verdicts** — each reviewer ends with `VERDICT: PASS` or
   `VERDICT: BLOCK`, which Loope parses (for Codex, from its `--json` event stream /
-  last-message output). The blocker signal drives the gates: if a review found
-  blockers and the revise turn changes nothing, the loop blocks.
+  last-message output). The blocker signal drives convergence: any `BLOCK` keeps the
+  loop iterating, feeding that reviewer's findings into the next fix turn.
 - **Parallel reviewers** — `--reviewers codex,claude` runs both reviewers
   concurrently on the same change, each in its own workspace directory, and
   aggregates their verdicts (any blocker ⇒ blockers present).
@@ -228,9 +242,11 @@ exercise the real agents manually:
 - [OpenCode Adapter Spec](docs/specs/2026-06-28-loope-opencode-adapter-spec.md)
 - [Design Contract Spec](docs/specs/2026-06-28-loope-design-contract-spec.md)
 - [Robustness Spec](docs/specs/2026-06-28-loope-robustness-spec.md)
+- [Iterative Loop Spec (v1.0)](docs/specs/2026-06-28-loope-iterative-loop-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
+- [Iterative Loop Plan (v1.0)](docs/plans/2026-06-28-loope-iterative-loop-plan.md)
 
 ## License
 

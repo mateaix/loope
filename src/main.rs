@@ -7,12 +7,12 @@ use std::process;
 mod theme;
 mod ui;
 
-use loope::executor::{ExecuteOptions, StepObserver, execute_plan};
+use loope::executor::{LoopConfig, StepObserver, execute_loop};
 use loope::stub::StubInvoker;
 use loope::subprocess::SubprocessInvoker;
 use loope::workspace::RunWorkspace;
 use loope::{
-    Adapter, LoopOptions, adapter::Invoker, generate_design_plan, generate_plan, list_adapters,
+    Adapter, LoopOptions, adapter::Invoker, generate_plan, list_adapters,
 };
 use ui::{ColorChoice, PrettyObserver};
 
@@ -30,6 +30,7 @@ fn main() {
         "run" => cmd_run(&mut args),
         "runs" => cmd_runs(&mut args),
         "show" => cmd_show(&mut args),
+        "apply" => cmd_apply(&mut args),
         "adapters" => {
             for adapter in list_adapters() {
                 println!("{}", adapter.as_str());
@@ -89,7 +90,16 @@ fn cmd_design(args: &mut Vec<String>) {
     }
     let base = cwd.join(".loope").join("runs");
 
-    let plan = generate_design_plan(&requirement, designer);
+    // A design-only loop: one designer step, no iterations (max_iters = 0).
+    let config = LoopConfig {
+        requirement: requirement.clone(),
+        include_design: true,
+        designer,
+        implementer: Adapter::Claude,
+        reviewers: Vec::new(),
+        max_iters: 0,
+        verify_command: None,
+    };
 
     if color {
         ui::banner(true);
@@ -113,7 +123,7 @@ fn cmd_design(args: &mut Vec<String>) {
         })
     };
 
-    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(plan.steps.len()));
+    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(1));
     let live_obs = renderer.as_ref().map(|r| ui::LiveObserver::new(r.sender()));
     let pretty = (color && no_progress).then_some(PrettyObserver { quiet: false });
     let observer: Option<&dyn StepObserver> = if let Some(o) = &live_obs {
@@ -124,13 +134,7 @@ fn cmd_design(args: &mut Vec<String>) {
         None
     };
 
-    let run = match execute_plan(
-        &plan,
-        &workspace,
-        invoker.as_ref(),
-        &ExecuteOptions::default(),
-        observer,
-    ) {
+    let run = match execute_loop(&config, &workspace, invoker.as_ref(), observer) {
         Ok(run) => run,
         Err(err) => {
             if let Some(r) = renderer {
@@ -172,6 +176,11 @@ fn cmd_run(args: &mut Vec<String>) {
         .or_else(|| std::env::var("LOOPE_OPENCODE_MODEL").ok())
         .filter(|m| !m.trim().is_empty());
     let timeout = resolve_timeout(remove_value(args, "--timeout"));
+    let max_iters = remove_value(args, "--max-iters")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    let show_diff = remove_flag(args, "--show-diff");
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
@@ -205,13 +214,23 @@ fn cmd_run(args: &mut Vec<String>) {
     } else {
         base_options.reviewers
     };
+    let config = LoopConfig {
+        requirement: requirement.clone(),
+        include_design,
+        designer: designer.unwrap_or(base_options.designer),
+        implementer: implementer.unwrap_or(base_options.implementer),
+        reviewers: reviewers.clone(),
+        max_iters,
+        verify_command,
+    };
+    // A representative plan (one iteration) for the confirmation prompt and pipeline banner.
     let plan = generate_plan(
         &requirement,
         LoopOptions {
             include_design,
-            implementer: implementer.unwrap_or(base_options.implementer),
+            implementer: config.implementer,
             reviewers,
-            designer: designer.unwrap_or(base_options.designer),
+            designer: config.designer,
             verifier: base_options.verifier,
         },
     );
@@ -233,6 +252,7 @@ fn cmd_run(args: &mut Vec<String>) {
             process::exit(1);
         }
     };
+    let _ = fs::write(workspace.root.join("plan.md"), plan.to_markdown());
 
     let invoker: Box<dyn Invoker + Sync> = if dry_run {
         Box::new(StubInvoker)
@@ -243,11 +263,11 @@ fn cmd_run(args: &mut Vec<String>) {
             timeout,
         })
     };
-    let options = ExecuteOptions { verify_command };
-
     // Live mode (TTY color, progress on) animates a pinned status line; otherwise the
     // committed-only PrettyObserver, or nothing in plain/piped output.
-    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(plan.steps.len()));
+    let per_iter = 1 + config.reviewers.len() + usize::from(config.verify_command.is_some());
+    let est_total = usize::from(config.include_design) + config.max_iters * per_iter;
+    let renderer = (color && !no_progress).then(|| ui::LiveRenderer::start(est_total));
     let live_obs = renderer.as_ref().map(|r| ui::LiveObserver::new(r.sender()));
     let pretty = (color && no_progress).then_some(PrettyObserver { quiet });
     let observer: Option<&dyn StepObserver> = if let Some(o) = &live_obs {
@@ -258,7 +278,7 @@ fn cmd_run(args: &mut Vec<String>) {
         None
     };
 
-    let run = match execute_plan(&plan, &workspace, invoker.as_ref(), &options, observer) {
+    let run = match execute_loop(&config, &workspace, invoker.as_ref(), observer) {
         Ok(run) => run,
         Err(err) => {
             if let Some(r) = renderer {
@@ -274,6 +294,14 @@ fn cmd_run(args: &mut Vec<String>) {
     }
 
     ui::print_report(&run.to_report_markdown(), Some(&workspace.root), color);
+
+    if show_diff {
+        let diffs = collect_run_diffs(&workspace.root);
+        if !diffs.trim().is_empty() {
+            println!("\n# Changes\n");
+            ui::print_diff(&diffs, color);
+        }
+    }
 
     if !run.all_passed() {
         process::exit(1);
@@ -312,8 +340,8 @@ fn cmd_runs(args: &mut Vec<String>) {
 fn read_run_summary(run_dir: &Path) -> Option<ui::RunSummary> {
     let json = fs::read_to_string(run_dir.join("run.json")).ok()?;
     Some(ui::RunSummary {
-        passed: json.contains("\"all_passed\":true"),
-        halted: json.contains("\"halted\":true"),
+        passed: json.contains("\"converged\":true"),
+        halted: json.contains("\"stop_reason\":\"step_failed\""),
         steps: json.matches("\"gate_passed\":").count(),
     })
 }
@@ -348,8 +376,75 @@ fn cmd_show(args: &mut Vec<String>) {
     }
 }
 
+/// Copy a run's changed/added files from its workspace back into the working directory.
+fn cmd_apply(args: &mut Vec<String>) {
+    let workdir = remove_value(args, "--workdir");
+    let Some(run_id) = args.first().cloned() else {
+        eprintln!("loope apply requires a run id, e.g. loope apply run-0001");
+        process::exit(2);
+    };
+    let cwd = current_dir_or_exit();
+    let run_dir = cwd.join(".loope").join("runs").join(&run_id);
+    let workspace = run_dir.join("workspace");
+    if !workspace.is_dir() {
+        eprintln!("no run workspace found for {run_id} (looked at {})", workspace.display());
+        process::exit(1);
+    }
+    let target = workdir.map(PathBuf::from).unwrap_or(cwd);
+    if !target.is_dir() {
+        eprintln!("target directory does not exist: {}", target.display());
+        process::exit(2);
+    }
+
+    let listing = match fs::read_to_string(run_dir.join("changed-files.txt")) {
+        Ok(text) => text,
+        Err(_) => {
+            eprintln!("no changed-files.txt for {run_id}; nothing to apply");
+            process::exit(1);
+        }
+    };
+    let files: Vec<&str> = listing.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if files.is_empty() {
+        println!("{run_id} changed no files; nothing to apply.");
+        return;
+    }
+
+    let mut applied = 0usize;
+    for rel in files {
+        let from = workspace.join(rel);
+        let to = target.join(rel);
+        if !from.is_file() {
+            continue;
+        }
+        if let Some(parent) = to.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            eprintln!("failed to create {}: {err}", parent.display());
+            process::exit(1);
+        }
+        match fs::copy(&from, &to) {
+            Ok(_) => {
+                println!("  applied {rel}");
+                applied += 1;
+            }
+            Err(err) => {
+                eprintln!("failed to apply {rel}: {err}");
+                process::exit(1);
+            }
+        }
+    }
+    println!("Applied {applied} file(s) from {run_id} into {}.", target.display());
+}
+
 /// Concatenate every step's `changes.diff` for a run, in step order.
 fn collect_run_diffs(run_dir: &Path) -> String {
+    // Prefer the run-level cumulative diff; fall back to concatenating per-step diffs
+    // (for runs produced before the cumulative diff existed).
+    if let Ok(diff) = fs::read_to_string(run_dir.join("changes.diff"))
+        && !diff.trim().is_empty()
+    {
+        return diff;
+    }
     let agents = run_dir.join("agents");
     let mut dirs: Vec<PathBuf> = match fs::read_dir(&agents) {
         Ok(entries) => entries
@@ -545,19 +640,19 @@ Usage:
   loope plan <requirement>
   loope plan --design <requirement>
   loope design [--designer A] <requirement>
-  loope run [--design] [--dry-run] [--in-place] [--workdir DIR] [--approve auto|manual] <requirement>
+  loope run [--design] [--dry-run] [--max-iters N] [--show-diff] [--workdir DIR] <requirement>
   loope runs
-  loope show <run-id>
+  loope show <run-id> [--diff]
+  loope apply <run-id> [--workdir DIR]
   loope adapters
 
-Default loop:
-  Claude implements -> Codex reviews -> Claude revises -> verifier checks
-
-Design-aware loop:
-  Design contract -> Claude implements -> Codex reviews -> Claude revises -> verifier checks
+The loop iterates: an optional design step, then implement -> review -> verify repeated
+with feedback until it converges (verification passes, no reviewer blocks) or --max-iters.
 
 run flags:
   --dry-run       Execute with deterministic stub agents (no external CLIs, no network).
+  --max-iters N   Cap the implement -> review -> verify iterations (default 3; 1 = single pass).
+  --show-diff     After the run, print the cumulative diff of everything that changed.
   --in-place      Operate on the working directory directly instead of a copied tree.
   --workdir DIR   Source directory to run against (default: current directory).
   --approve MODE  'auto' (default) or 'manual' (confirm before launching agents).
@@ -575,8 +670,9 @@ run flags:
   --color WHEN    'auto' (default), 'always', or 'never' for terminal coloring.
 
 show flags:
-  --diff          Also print the persisted diffs for the run.
+  --diff          Also print the run's cumulative diff.
 
+apply copies a run's changed files from its workspace into your tree (never deletes).
 Runs are written to .loope/runs/<run-id>/."
     );
 }

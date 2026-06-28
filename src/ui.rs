@@ -208,6 +208,10 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 /// Messages the live renderer consumes from the executor's observer.
 pub enum RenderMsg {
+    Iteration {
+        n: usize,
+        total: usize,
+    },
     StepStart {
         id: usize,
         role: Role,
@@ -280,6 +284,13 @@ fn render_loop(rx: Receiver<RenderMsg>, total: usize) {
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(RenderMsg::Iteration { n, total }) => {
+                let blue = fg(28, 155, 240);
+                commit(
+                    &mut live_drawn,
+                    &format!("\n  {blue}∞ iteration {n}/{total}{RESET}"),
+                );
+            }
             Ok(RenderMsg::StepStart { id, role, adapter }) => {
                 commit(&mut live_drawn, &step_header(id, role, adapter));
                 current = Some(Current {
@@ -440,6 +451,10 @@ impl LiveObserver {
 }
 
 impl StepObserver for LiveObserver {
+    fn on_iteration_start(&self, n: usize, total: usize) {
+        let _ = self.tx.send(RenderMsg::Iteration { n, total });
+    }
+
     fn on_step_start(&self, step: &LoopStep) {
         let _ = self.tx.send(RenderMsg::StepStart {
             id: step.id,
@@ -510,7 +525,7 @@ pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
         }
     }
 
-    let passed = outcome.contains("all gates passed");
+    let passed = outcome.contains("converged") || outcome.contains("design contract");
     let accent = if passed { GREEN } else { RED };
     let title = if total.is_empty() {
         format!(

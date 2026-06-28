@@ -32,7 +32,7 @@ fn run_dry_run_executes_loop_and_writes_run_directory() {
     assert!(output.status.success(), "expected success exit code");
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(stdout.contains("# Loope Run Report"));
-    assert!(stdout.contains("all gates passed"));
+    assert!(stdout.contains("converged"));
     assert!(stdout.contains("implementer via Claude"));
     assert!(stdout.contains("reviewer via Codex"));
 
@@ -54,7 +54,7 @@ fn run_dry_run_executes_loop_and_writes_run_directory() {
     );
 
     let run_json = fs::read_to_string(run.join("run.json")).unwrap();
-    assert!(run_json.contains("\"all_passed\":true"));
+    assert!(run_json.contains("\"converged\":true"));
 
     let _ = fs::remove_dir_all(&cwd);
 }
@@ -267,7 +267,7 @@ fn run_writes_events_and_show_diff_prints_changes() {
 }
 
 #[test]
-fn implement_and_revise_turns_keep_separate_artifacts() {
+fn dry_run_converges_in_one_iteration() {
     let exe = env!("CARGO_BIN_EXE_loope");
     let cwd = temp_dir("turns");
 
@@ -278,15 +278,65 @@ fn implement_and_revise_turns_keep_separate_artifacts() {
         .expect("run loope");
     assert!(output.status.success());
 
-    // default loop: implementer at step 1 and the revise turn at step 3 — each has its
-    // own numbered directory, so neither overwrites the other.
-    let agents = cwd
-        .join(".loope")
-        .join("runs")
-        .join("run-0001")
-        .join("agents");
+    // The stub reviewer passes, so the loop converges in one iteration: implement (1)
+    // and review (2) only, each in its own numbered directory.
+    let run = cwd.join(".loope").join("runs").join("run-0001");
+    let agents = run.join("agents");
     assert!(agents.join("01-implementer-claude").join("result.md").exists());
-    assert!(agents.join("03-implementer-claude").join("result.md").exists());
+    assert!(agents.join("02-reviewer-codex").join("result.md").exists());
+
+    let report = fs::read_to_string(run.join("report.md")).unwrap();
+    assert!(report.contains("- Iterations: 1"));
+    assert!(report.contains("- Outcome: converged"));
+
+    let run_json = fs::read_to_string(run.join("run.json")).unwrap();
+    assert!(run_json.contains("\"converged\":true"));
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn apply_lands_a_dry_run_change_into_a_target() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("applyrun");
+
+    let run = Command::new(exe)
+        .args(["run", "--dry-run", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+    assert!(run.status.success());
+
+    let target = temp_dir("applytgt");
+    let apply = Command::new(exe)
+        .args(["apply", "run-0001", "--workdir"])
+        .arg(&target)
+        .current_dir(&cwd)
+        .output()
+        .expect("apply loope");
+    assert!(apply.status.success());
+    let out = String::from_utf8(apply.stdout).unwrap();
+    assert!(out.contains("IMPLEMENTATION_NOTES.md"));
+    assert!(target.join("IMPLEMENTATION_NOTES.md").exists());
+
+    let _ = fs::remove_dir_all(&cwd);
+    let _ = fs::remove_dir_all(&target);
+}
+
+#[test]
+fn run_show_diff_prints_cumulative_changes() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("showdiff");
+
+    let run = Command::new(exe)
+        .args(["run", "--dry-run", "--show-diff", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+    assert!(run.status.success());
+    let out = String::from_utf8(run.stdout).unwrap();
+    assert!(out.contains("# Changes"));
+    assert!(out.contains("IMPLEMENTATION_NOTES.md"));
 
     let _ = fs::remove_dir_all(&cwd);
 }

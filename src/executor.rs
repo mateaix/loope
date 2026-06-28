@@ -1,5 +1,6 @@
-//! Loop executor: walks a [`LoopPlan`], runs each step through an [`Invoker`],
-//! passes artifacts forward, evaluates gates, and persists a run.
+//! Loop executor: runs an iterative loop (design once, then implement → review →
+//! verify until convergence or the iteration cap), driving each step through an
+//! [`Invoker`] and persisting a run.
 
 use std::io;
 use std::path::Path;
@@ -13,18 +14,61 @@ use crate::workspace::{
     FileChange, FileDiff, RunWorkspace, atomic_write, changed_files, compute_file_diffs,
     content_snapshot, render_diffs, snapshot,
 };
-use crate::{Adapter, LoopPlan, Role, prompt_for_step};
+use crate::{Adapter, Role, prompt_for_step};
 
-/// Options controlling how a loop executes.
-#[derive(Clone, Debug, Default)]
-pub struct ExecuteOptions {
-    /// When set, the verifier step runs this shell command in the workspace instead
-    /// of invoking an agent; its gate passes iff the command exits zero.
+/// Why a run stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopReason {
+    /// Verification passed and no reviewer reported blockers.
+    Converged,
+    /// Reached the iteration cap without converging.
+    MaxIters,
+    /// A step's agent failed or timed out — the loop halted immediately.
+    StepFailed,
+    /// A design-only run produced its contract.
+    DesignOnly,
+}
+
+impl StopReason {
+    /// Human label for the report/summary.
+    pub fn label(self) -> &'static str {
+        match self {
+            StopReason::Converged => "converged",
+            StopReason::MaxIters => "stopped at the iteration cap",
+            StopReason::StepFailed => "halted: a step failed",
+            StopReason::DesignOnly => "design contract produced",
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Converged => "converged",
+            StopReason::MaxIters => "max_iters",
+            StopReason::StepFailed => "step_failed",
+            StopReason::DesignOnly => "design_only",
+        }
+    }
+}
+
+/// Configuration for an iterative loop run.
+#[derive(Clone, Debug)]
+pub struct LoopConfig {
+    pub requirement: String,
+    pub include_design: bool,
+    pub designer: Adapter,
+    pub implementer: Adapter,
+    pub reviewers: Vec<Adapter>,
+    /// Max iterations of implement → review → verify. `0` means design-only.
+    pub max_iters: usize,
+    /// When set, the verifier runs this shell command; verification passes iff it
+    /// exits zero. With no command, verification is informational (always passing).
     pub verify_command: Option<String>,
 }
 
 /// Observes step execution so a frontend can render live progress.
 pub trait StepObserver {
+    /// Called at the start of each iteration (1-based) of a run of `total` iterations.
+    fn on_iteration_start(&self, _iteration: usize, _total: usize) {}
     /// Called just before a step's agent (or verify command) runs.
     fn on_step_start(&self, step: &crate::LoopStep);
     /// Called for each normalized event a step emits while it runs. Default no-op.
@@ -50,6 +94,8 @@ pub struct StepOutcome {
     pub changes: Vec<FileChange>,
     /// Wall-clock time the step took, in milliseconds.
     pub duration_ms: u64,
+    /// The iteration (1-based) this step ran in; `0` for the design step.
+    pub iteration: usize,
 }
 
 /// The result of executing a whole loop.
@@ -58,37 +104,57 @@ pub struct LoopRun {
     pub run_id: String,
     pub requirement: String,
     pub outcomes: Vec<StepOutcome>,
-    /// True if the loop stopped early on a blocking gate.
-    pub halted: bool,
+    /// Number of implement → review → verify iterations run.
+    pub iterations: usize,
+    /// Why the run stopped.
+    pub stop_reason: StopReason,
+    /// Cumulative per-file changes from the original source to the final workspace.
+    pub changed: Vec<FileChange>,
     /// Total wall-clock time of the run, in milliseconds.
     pub total_ms: u64,
 }
 
 impl LoopRun {
-    /// True only if the loop ran every step and each gate passed.
+    /// True when the run reached a successful stop (converged, or a design-only run).
     pub fn all_passed(&self) -> bool {
-        !self.halted && self.outcomes.iter().all(|o| o.gate_passed)
+        matches!(self.stop_reason, StopReason::Converged | StopReason::DesignOnly)
+    }
+
+    /// Total added/removed lines across all cumulative changes.
+    pub fn change_stats(&self) -> (usize, usize) {
+        self.changed
+            .iter()
+            .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed))
     }
 
     /// Human-readable final loop report.
     pub fn to_report_markdown(&self) -> String {
-        let outcome = if self.all_passed() {
-            "all gates passed"
-        } else if self.halted {
-            "halted on a blocking gate"
-        } else {
-            "completed with gate failures"
-        };
-
         let mut out = String::new();
         out.push_str("# Loope Run Report\n\n");
         out.push_str(&format!("- Run: {}\n", self.run_id));
         out.push_str(&format!("- Requirement: {}\n", self.requirement));
-        out.push_str(&format!("- Outcome: {outcome}\n"));
+        out.push_str(&format!("- Outcome: {}\n", self.stop_reason.label()));
+        out.push_str(&format!("- Iterations: {}\n", self.iterations));
+        let (added, removed) = self.change_stats();
+        out.push_str(&format!(
+            "- Changed: {} file(s) +{} -{}\n",
+            self.changed.len(),
+            added,
+            removed
+        ));
         out.push_str(&format!("- Took: {}\n\n", fmt_duration(self.total_ms)));
         out.push_str("## Steps\n\n");
 
+        let mut shown_iter = usize::MAX;
         for o in &self.outcomes {
+            if o.iteration != shown_iter {
+                shown_iter = o.iteration;
+                if o.iteration == 0 {
+                    out.push_str("### Design\n\n");
+                } else {
+                    out.push_str(&format!("### Iteration {}\n\n", o.iteration));
+                }
+            }
             let status = if o.gate_passed { "PASS" } else { "BLOCK" };
             out.push_str(&format!(
                 "{}. **{} via {}** — {}\n",
@@ -108,22 +174,15 @@ impl LoopRun {
                 ));
             }
             out.push_str(&format!("   - Message: {}\n", first_line(&o.result.message)));
-            if !o.changes.is_empty() {
-                for change in &o.changes {
-                    if change.binary {
-                        out.push_str(&format!("   - Changed: {} (binary)\n", change.path));
-                    } else {
-                        out.push_str(&format!(
-                            "   - Changed: {} +{} -{}\n",
-                            change.path, change.added, change.removed
-                        ));
-                    }
+            for change in &o.changes {
+                if change.binary {
+                    out.push_str(&format!("   - Changed: {} (binary)\n", change.path));
+                } else {
+                    out.push_str(&format!(
+                        "   - Changed: {} +{} -{}\n",
+                        change.path, change.added, change.removed
+                    ));
                 }
-            } else if !o.result.changed_files.is_empty() {
-                out.push_str(&format!(
-                    "   - Changed files: {}\n",
-                    o.result.changed_files.join(", ")
-                ));
             }
         }
 
@@ -137,8 +196,9 @@ impl LoopRun {
             .iter()
             .map(|o| {
                 format!(
-                    "{{\"id\":{},\"role\":\"{}\",\"adapter\":\"{}\",\"gate_passed\":{},\"success\":{}}}",
+                    "{{\"id\":{},\"iteration\":{},\"role\":\"{}\",\"adapter\":\"{}\",\"gate_passed\":{},\"success\":{}}}",
                     o.step_id,
+                    o.iteration,
                     o.role.as_str(),
                     o.adapter.as_str(),
                     o.gate_passed,
@@ -148,207 +208,67 @@ impl LoopRun {
             .collect();
 
         format!(
-            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"all_passed\":{},\"halted\":{},\"steps\":[{}]}}\n",
+            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"converged\":{},\"iterations\":{},\"stop_reason\":\"{}\",\"steps\":[{}]}}\n",
             json_escape(&self.run_id),
             json_escape(&self.requirement),
             self.all_passed(),
-            self.halted,
+            self.iterations,
+            self.stop_reason.as_str(),
             steps.join(",")
         )
     }
 }
 
-/// Execute `plan` step by step in `workspace`, driving each step through `invoker`.
-/// Persists per-step prompt/transcript/result plus `report.md` and `run.json`, and
-/// stops at the first blocking gate.
-pub fn execute_plan(
-    plan: &LoopPlan,
+/// A step's raw run (before the gate is decided).
+struct StepRun {
+    result: InvocationResult,
+    changes: Vec<FileChange>,
+    duration_ms: u64,
+}
+
+/// Build a synthetic [`crate::LoopStep`] for a run step.
+fn make_step(id: usize, role: Role, adapter: Adapter, gate: &str) -> crate::LoopStep {
+    crate::LoopStep {
+        id,
+        role,
+        adapter,
+        objective: String::new(),
+        expected_artifact: String::new(),
+        gate: gate.to_string(),
+    }
+}
+
+/// Execute an iterative loop: design once (if configured), then repeat
+/// implement → review → verify until it converges or hits `max_iters`.
+pub fn execute_loop(
+    config: &LoopConfig,
     workspace: &RunWorkspace,
     invoker: &(dyn Invoker + Sync),
-    options: &ExecuteOptions,
     observer: Option<&dyn StepObserver>,
 ) -> io::Result<LoopRun> {
-    atomic_write(&workspace.root.join("plan.md"), &plan.to_markdown())?;
-
     let run_started = Instant::now();
-    let mut outcomes = Vec::new();
-    let mut halted = false;
-
-    // Artifacts passed forward between steps.
-    let mut last_implementer_message: Option<String> = None;
-    let mut last_implementer_files: Vec<String> = Vec::new();
-    let mut last_review_message: Option<String> = None;
-    let mut review_blockers_pending = false;
+    // The original source, captured before any step runs, for the cumulative diff.
+    let baseline = content_snapshot(&workspace.workspace_dir);
+    let mut outcomes: Vec<StepOutcome> = Vec::new();
+    let mut step_id = 0usize;
     let mut design_contract: Option<String> = None;
+    let mut iterations = 0usize;
+    let mut stop_reason = StopReason::MaxIters;
 
-    let steps = &plan.steps;
-    let mut i = 0;
-    while i < steps.len() {
-        // A maximal run of consecutive reviewer steps forms one review phase that runs
-        // its reviewers concurrently and aggregates their verdicts.
-        if steps[i].role == Role::Reviewer {
-            let start = i;
-            while i < steps.len() && steps[i].role == Role::Reviewer {
-                i += 1;
-            }
-            let group = &steps[start..i];
-
-            let prompts: Vec<String> = group
-                .iter()
-                .map(|s| {
-                    build_prompt(
-                        s.role,
-                        &plan.requirement,
-                        s,
-                        last_implementer_message.as_deref(),
-                        &last_implementer_files,
-                        last_review_message.as_deref(),
-                        design_contract.as_deref(),
-                    )
-                })
-                .collect();
-            for (s, prompt) in group.iter().zip(&prompts) {
-                workspace.agent_home(s.id, s.role, s.adapter)?;
-                atomic_write(
-                    &workspace.agent_dir(s.id, s.role, s.adapter).join("prompt.md"),
-                    prompt,
-                )?;
-            }
-
-            let group_outcomes = if group.len() == 1 {
-                if let Some(observer) = observer {
-                    observer.on_step_start(&group[0]);
-                }
-                vec![run_reviewer(workspace, &group[0], &prompts[0], invoker)?]
-            } else {
-                run_reviewers_parallel(workspace, group, &prompts, invoker)?
-            };
-
-            // Aggregate: any reviewer with blockers means blockers are pending.
-            review_blockers_pending = false;
-            let mut summaries = Vec::new();
-            let mut group_halt = false;
-            for outcome in group_outcomes {
-                if let Some(verdict) = &outcome.review_verdict {
-                    if verdict.has_blockers {
-                        review_blockers_pending = true;
-                    }
-                    summaries.push(format!(
-                        "{} ({}): {}",
-                        outcome.adapter.display_name(),
-                        verdict.label(),
-                        verdict.summary
-                    ));
-                }
-                if !outcome.gate_passed {
-                    group_halt = true;
-                }
-                if let Some(observer) = observer {
-                    observer.on_step_finish(&outcome);
-                }
-                outcomes.push(outcome);
-            }
-            last_review_message = Some(format!("Reviews:\n{}", summaries.join("\n")));
-            if group_halt {
-                halted = true;
-                break;
-            }
-            continue;
-        }
-
-        let step = &steps[i];
-        i += 1;
-
-        let prompt = build_prompt(
-            step.role,
-            &plan.requirement,
-            step,
-            last_implementer_message.as_deref(),
-            &last_implementer_files,
-            last_review_message.as_deref(),
-            design_contract.as_deref(),
+    // --- Design (once) ---
+    if config.include_design {
+        step_id += 1;
+        let step = make_step(
+            step_id,
+            Role::Designer,
+            config.designer,
+            "a non-empty design contract is produced",
         );
-
-        let agent_dir = workspace.agent_dir(step.id, step.role, step.adapter);
-        let home = workspace.agent_home(step.id, step.role, step.adapter)?;
-        atomic_write(&agent_dir.join("prompt.md"), &prompt)?;
-
-        if let Some(observer) = observer {
-            observer.on_step_start(step);
-        }
-
-        let read_only = read_only_for(step.role);
-        let is_command_verify = step.role == Role::Verifier && options.verify_command.is_some();
-        // For write-capable agent steps, capture content up front so we can diff.
-        let before_content = (!read_only && !is_command_verify)
-            .then(|| content_snapshot(&workspace.workspace_dir));
-
-        let step_started = Instant::now();
-        let result = if is_command_verify {
-            // A real check command stands in for the verifier agent.
-            run_verify_command(
-                options.verify_command.as_deref().unwrap(),
-                &workspace.workspace_dir,
-            )
-        } else {
-            let invocation = AgentInvocation {
-                adapter: step.adapter,
-                role: step.role,
-                prompt: prompt.clone(),
-                workspace_dir: workspace.workspace_dir.clone(),
-                home_dir: home,
-                read_only,
-            };
-            // For write-capable steps, detect file changes by diffing the workspace,
-            // since the CLI cannot reliably self-report what it changed.
-            let before = (!read_only).then(|| snapshot(&workspace.workspace_dir));
-            let mut events: Vec<LoopEvent> = Vec::new();
-            let mut result = {
-                let mut sink = |event: LoopEvent| {
-                    if let Some(observer) = observer {
-                        observer.on_event(&event);
-                    }
-                    events.push(event);
-                };
-                invoker.invoke_streaming(&invocation, &mut sink)
-            };
-            atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
-            if let Some(before) = before
-                && result.changed_files.is_empty()
-            {
-                let after = snapshot(&workspace.workspace_dir);
-                result.changed_files = changed_files(&before, &after);
-            }
-            result
-        };
-
-        atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
-        atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
-
-        // Turn the workspace changes into per-file diffs for the report and `show`.
-        // Keep only files whose content actually changed, so a no-op revise turn
-        // doesn't overwrite an earlier turn's diff with an empty one.
-        let changes = if let Some(before_content) = &before_content {
-            let real: Vec<FileDiff> = compute_file_diffs(
-                &workspace.workspace_dir,
-                &result.changed_files,
-                before_content,
-            )
-            .into_iter()
-            .filter(|d| d.change.binary || d.change.added + d.change.removed > 0)
-            .collect();
-            if !real.is_empty() {
-                atomic_write(&agent_dir.join("changes.diff"), &render_diffs(&real))?;
-            }
-            real.into_iter().map(|d| d.change).collect()
-        } else {
-            Vec::new()
-        };
-
-        // A successful design step yields the Design Contract: persist it as a run
-        // artifact and inside the workspace, and feed it to downstream prompts.
-        if step.role == Role::Designer && result.success && !result.message.trim().is_empty() {
-            let contract = result.message.clone();
+        let prompt = build_prompt(&step, &config.requirement, None, None);
+        let run = execute_one(workspace, &step, &prompt, invoker, observer, None)?;
+        let ok = run.result.success && !run.result.message.trim().is_empty();
+        if ok {
+            let contract = run.result.message.clone();
             atomic_write(&workspace.root.join("design-contract.md"), &contract)?;
             atomic_write(
                 &workspace.workspace_dir.join("DESIGN_CONTRACT.md"),
@@ -356,64 +276,317 @@ pub fn execute_plan(
             )?;
             design_contract = Some(contract);
         }
-
-        // A second implementer turn that follows a review is a revision. If the review
-        // raised no blockers it may legitimately make no change; if it raised blockers,
-        // a no-op revise turn means they were not addressed.
-        let is_revision = step.role == Role::Implementer && last_review_message.is_some();
-        let (gate_passed, gate_notes) =
-            evaluate_gate(step.role, &result, is_revision, review_blockers_pending);
-
-        // Record artifacts for downstream steps before moving `result`.
-        if step.role == Role::Implementer {
-            last_implementer_message = Some(result.message.clone());
-            if !result.changed_files.is_empty() {
-                last_implementer_files = result.changed_files.clone();
-                if is_revision {
-                    // Blockers addressed once a revise turn produced a change.
-                    review_blockers_pending = false;
-                }
-            }
-        }
-
-        let outcome = StepOutcome {
-            step_id: step.id,
-            role: step.role,
-            adapter: step.adapter,
-            prompt,
-            result,
-            gate: step.gate.clone(),
-            gate_passed,
-            gate_notes,
-            review_verdict: None,
-            changes,
-            duration_ms: step_started.elapsed().as_millis() as u64,
+        let notes = if ok {
+            "design contract produced"
+        } else {
+            "design step failed"
         };
-        if let Some(observer) = observer {
-            observer.on_step_finish(&outcome);
+        finish(observer, &mut outcomes, step_outcome(&step, 0, run, ok, notes, None, prompt));
+        if !ok {
+            return finalize(workspace, &config.requirement, &baseline, run_started, outcomes, 0, StopReason::StepFailed);
         }
-        outcomes.push(outcome);
-
-        if !gate_passed {
-            halted = true;
-            break;
+        if config.max_iters == 0 {
+            return finalize(workspace, &config.requirement, &baseline, run_started, outcomes, 0, StopReason::DesignOnly);
         }
     }
 
+    // --- Iterations ---
+    let max = config.max_iters.max(1);
+    let mut feedback: Option<String> = None;
+
+    'iterations: for iter in 1..=max {
+        iterations = iter;
+        if let Some(observer) = observer {
+            observer.on_iteration_start(iter, max);
+        }
+
+        // Implement / fix.
+        step_id += 1;
+        let istep = make_step(
+            step_id,
+            Role::Implementer,
+            config.implementer,
+            if iter == 1 {
+                "initial implementation"
+            } else {
+                "address prior review and verification failures"
+            },
+        );
+        let iprompt = build_prompt(
+            &istep,
+            &config.requirement,
+            feedback.as_deref(),
+            design_contract.as_deref(),
+        );
+        let irun = execute_one(workspace, &istep, &iprompt, invoker, observer, None)?;
+        if !irun.result.success {
+            finish(observer, &mut outcomes, step_outcome(&istep, iter, irun, false, "invocation failed", None, iprompt));
+            stop_reason = StopReason::StepFailed;
+            break 'iterations;
+        }
+        let changed = !irun.changes.is_empty();
+        let inotes = if changed { "change produced" } else { "no change made" };
+        finish(observer, &mut outcomes, step_outcome(&istep, iter, irun, true, inotes, None, iprompt));
+
+        // Review (reviewers run concurrently on the current state).
+        let mut review_steps = Vec::new();
+        let mut review_prompts = Vec::new();
+        for &reviewer in &config.reviewers {
+            step_id += 1;
+            let rstep = make_step(step_id, Role::Reviewer, reviewer, "review produced");
+            let rprompt = build_prompt(&rstep, &config.requirement, None, design_contract.as_deref());
+            review_steps.push(rstep);
+            review_prompts.push(rprompt);
+        }
+        for (s, p) in review_steps.iter().zip(&review_prompts) {
+            workspace.agent_home(s.id, s.role, s.adapter)?;
+            atomic_write(&workspace.agent_dir(s.id, s.role, s.adapter).join("prompt.md"), p)?;
+        }
+        let review_outcomes = if review_steps.len() == 1 {
+            if let Some(observer) = observer {
+                observer.on_step_start(&review_steps[0]);
+            }
+            vec![run_reviewer(workspace, &review_steps[0], &review_prompts[0], iter, invoker)?]
+        } else {
+            run_reviewers_parallel(workspace, &review_steps, &review_prompts, iter, invoker)?
+        };
+
+        let mut has_blockers = false;
+        let mut blocker_messages = Vec::new();
+        let mut review_failed = false;
+        for outcome in review_outcomes {
+            if let Some(verdict) = &outcome.review_verdict
+                && verdict.has_blockers
+            {
+                has_blockers = true;
+                blocker_messages.push(format!(
+                    "{}: {}",
+                    outcome.adapter.display_name(),
+                    first_line(&outcome.result.message)
+                ));
+            }
+            if !outcome.result.success {
+                review_failed = true;
+            }
+            finish(observer, &mut outcomes, outcome);
+        }
+        if review_failed {
+            stop_reason = StopReason::StepFailed;
+            break 'iterations;
+        }
+
+        // Verify (only when a real check command is configured).
+        let mut verify_pass = true;
+        let mut verify_failure: Option<String> = None;
+        if let Some(cmd) = &config.verify_command {
+            step_id += 1;
+            let vstep = make_step(step_id, Role::Verifier, Adapter::Generic, "verify command exits zero");
+            let vprompt = build_prompt(&vstep, &config.requirement, None, design_contract.as_deref());
+            let vrun = execute_one(workspace, &vstep, &vprompt, invoker, observer, Some(cmd))?;
+            verify_pass = vrun.result.success;
+            if !verify_pass {
+                verify_failure = Some(vrun.result.message.clone());
+            }
+            let vnotes = if verify_pass {
+                "verification passed"
+            } else {
+                "verification failed"
+            };
+            finish(observer, &mut outcomes, step_outcome(&vstep, iter, vrun, verify_pass, vnotes, None, vprompt));
+        }
+
+        if verify_pass && !has_blockers {
+            stop_reason = StopReason::Converged;
+            break 'iterations;
+        }
+        if iter >= max {
+            stop_reason = StopReason::MaxIters;
+            break 'iterations;
+        }
+        feedback = Some(compose_feedback(&blocker_messages, verify_failure.as_deref()));
+    }
+
+    finalize(workspace, &config.requirement, &baseline, run_started, outcomes, iterations, stop_reason)
+}
+
+/// Push an outcome (notifying the observer) into the running list.
+fn finish(observer: Option<&dyn StepObserver>, outcomes: &mut Vec<StepOutcome>, outcome: StepOutcome) {
+    if let Some(observer) = observer {
+        observer.on_step_finish(&outcome);
+    }
+    outcomes.push(outcome);
+}
+
+/// Assemble a [`StepOutcome`] from a [`StepRun`] and its gate decision.
+fn step_outcome(
+    step: &crate::LoopStep,
+    iteration: usize,
+    run: StepRun,
+    gate_passed: bool,
+    gate_notes: &str,
+    verdict: Option<ReviewVerdict>,
+    prompt: String,
+) -> StepOutcome {
+    StepOutcome {
+        step_id: step.id,
+        role: step.role,
+        adapter: step.adapter,
+        prompt,
+        result: run.result,
+        gate: step.gate.clone(),
+        gate_passed,
+        gate_notes: gate_notes.to_string(),
+        review_verdict: verdict,
+        changes: run.changes,
+        duration_ms: run.duration_ms,
+        iteration,
+    }
+}
+
+/// Write the report + run record (plus the cumulative diff and changed-file listing)
+/// and return the [`LoopRun`].
+fn finalize(
+    workspace: &RunWorkspace,
+    requirement: &str,
+    baseline: &std::collections::BTreeMap<String, String>,
+    started: Instant,
+    outcomes: Vec<StepOutcome>,
+    iterations: usize,
+    stop_reason: StopReason,
+) -> io::Result<LoopRun> {
+    // Cumulative diff: the original source snapshot versus the final workspace.
+    let after = content_snapshot(&workspace.workspace_dir);
+    let mut candidates: Vec<String> = baseline.keys().cloned().collect();
+    for path in after.keys() {
+        if !baseline.contains_key(path) {
+            candidates.push(path.clone());
+        }
+    }
+    let diffs: Vec<FileDiff> = compute_file_diffs(&workspace.workspace_dir, &candidates, baseline)
+        .into_iter()
+        .filter(|d| d.change.binary || d.change.added + d.change.removed > 0)
+        .collect();
+    atomic_write(&workspace.root.join("changes.diff"), &render_diffs(&diffs))?;
+    let changed: Vec<FileChange> = diffs.into_iter().map(|d| d.change).collect();
+    // A flat listing of applyable (still-present) files, for `loope apply`.
+    let listing: String = changed
+        .iter()
+        .filter(|c| after.contains_key(&c.path))
+        .map(|c| format!("{}\n", c.path))
+        .collect();
+    atomic_write(&workspace.root.join("changed-files.txt"), &listing)?;
+
     let run = LoopRun {
         run_id: workspace.run_id.clone(),
-        requirement: plan.requirement.clone(),
+        requirement: requirement.to_string(),
         outcomes,
-        halted,
-        total_ms: run_started.elapsed().as_millis() as u64,
+        iterations,
+        stop_reason,
+        changed,
+        total_ms: started.elapsed().as_millis() as u64,
     };
-
     atomic_write(&workspace.root.join("report.md"), &run.to_report_markdown())?;
     atomic_write(&workspace.root.join("run.json"), &run.to_run_json())?;
-
     Ok(run)
 }
 
+/// Compose a feedback block from review blockers and a verification failure.
+fn compose_feedback(blockers: &[String], verify_failure: Option<&str>) -> String {
+    let mut out = String::new();
+    if !blockers.is_empty() {
+        out.push_str("The previous review raised blocking findings to address:\n");
+        for blocker in blockers {
+            out.push_str(&format!("- {blocker}\n"));
+        }
+    }
+    if let Some(failure) = verify_failure {
+        out.push_str("\nThe verifier failed; fix the cause:\n");
+        out.push_str(failure.trim());
+        out.push('\n');
+    }
+    out
+}
+
+/// Run a single non-reviewer step: persist its artifacts and detect its changes,
+/// without deciding the gate (the caller does).
+fn execute_one(
+    workspace: &RunWorkspace,
+    step: &crate::LoopStep,
+    prompt: &str,
+    invoker: &dyn Invoker,
+    observer: Option<&dyn StepObserver>,
+    verify_command: Option<&str>,
+) -> io::Result<StepRun> {
+    let agent_dir = workspace.agent_dir(step.id, step.role, step.adapter);
+    let home = workspace.agent_home(step.id, step.role, step.adapter)?;
+    atomic_write(&agent_dir.join("prompt.md"), prompt)?;
+
+    if let Some(observer) = observer {
+        observer.on_step_start(step);
+    }
+
+    let read_only = read_only_for(step.role);
+    let is_command_verify = step.role == Role::Verifier && verify_command.is_some();
+    let before_content =
+        (!read_only && !is_command_verify).then(|| content_snapshot(&workspace.workspace_dir));
+
+    let started = Instant::now();
+    let result = if is_command_verify {
+        run_verify_command(verify_command.unwrap(), &workspace.workspace_dir)
+    } else {
+        let invocation = AgentInvocation {
+            adapter: step.adapter,
+            role: step.role,
+            prompt: prompt.to_string(),
+            workspace_dir: workspace.workspace_dir.clone(),
+            home_dir: home,
+            read_only,
+        };
+        let before = (!read_only).then(|| snapshot(&workspace.workspace_dir));
+        let mut events: Vec<LoopEvent> = Vec::new();
+        let mut result = {
+            let mut sink = |event: LoopEvent| {
+                if let Some(observer) = observer {
+                    observer.on_event(&event);
+                }
+                events.push(event);
+            };
+            invoker.invoke_streaming(&invocation, &mut sink)
+        };
+        atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
+        if let Some(before) = before
+            && result.changed_files.is_empty()
+        {
+            let after = snapshot(&workspace.workspace_dir);
+            result.changed_files = changed_files(&before, &after);
+        }
+        result
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
+    atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
+
+    let changes = if let Some(before_content) = &before_content {
+        let real: Vec<FileDiff> =
+            compute_file_diffs(&workspace.workspace_dir, &result.changed_files, before_content)
+                .into_iter()
+                .filter(|d| d.change.binary || d.change.added + d.change.removed > 0)
+                .collect();
+        if !real.is_empty() {
+            atomic_write(&agent_dir.join("changes.diff"), &render_diffs(&real))?;
+        }
+        real.into_iter().map(|d| d.change).collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(StepRun {
+        result,
+        changes,
+        duration_ms,
+    })
+}
 /// Reviewer and verifier never write; designer and implementer may.
 fn read_only_for(role: Role) -> bool {
     matches!(role, Role::Reviewer | Role::Verifier)
@@ -426,6 +599,7 @@ fn run_reviewer(
     workspace: &RunWorkspace,
     step: &crate::LoopStep,
     prompt: &str,
+    iteration: usize,
     invoker: &dyn Invoker,
 ) -> io::Result<StepOutcome> {
     let home = workspace.agent_home(step.id, step.role, step.adapter)?;
@@ -451,7 +625,12 @@ fn run_reviewer(
     atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
 
     let verdict = parse_review_verdict(&result.message);
-    let (gate_passed, gate_notes) = evaluate_gate(Role::Reviewer, &result, false, false);
+    // A review is a valid artifact whenever it ran; the verdict carries the signal.
+    let (gate_passed, gate_notes) = if result.success {
+        (true, "review produced".to_string())
+    } else {
+        (false, "invocation failed".to_string())
+    };
 
     Ok(StepOutcome {
         step_id: step.id,
@@ -465,6 +644,7 @@ fn run_reviewer(
         review_verdict: Some(verdict),
         changes: Vec::new(),
         duration_ms,
+        iteration,
     })
 }
 
@@ -474,13 +654,16 @@ fn run_reviewers_parallel(
     workspace: &RunWorkspace,
     group: &[crate::LoopStep],
     prompts: &[String],
+    iteration: usize,
     invoker: &(dyn Invoker + Sync),
 ) -> io::Result<Vec<StepOutcome>> {
     std::thread::scope(|scope| {
         let handles: Vec<_> = group
             .iter()
             .zip(prompts)
-            .map(|(step, prompt)| scope.spawn(move || run_reviewer(workspace, step, prompt, invoker)))
+            .map(|(step, prompt)| {
+                scope.spawn(move || run_reviewer(workspace, step, prompt, iteration, invoker))
+            })
             .collect();
         handles
             .into_iter()
@@ -525,105 +708,42 @@ fn run_verify_command(command: &str, workspace_dir: &Path) -> InvocationResult {
     }
 }
 
-/// Build a step's prompt from its base prompt plus the relevant upstream artifacts.
-#[allow(clippy::too_many_arguments)]
+/// Build a step's prompt: its base role prompt, plus the design contract (when present)
+/// and, for a fix iteration, the feedback to address.
 fn build_prompt(
-    role: Role,
-    requirement: &str,
     step: &crate::LoopStep,
-    last_implementer_message: Option<&str>,
-    last_implementer_files: &[String],
-    last_review_message: Option<&str>,
+    requirement: &str,
+    feedback: Option<&str>,
     design_contract: Option<&str>,
 ) -> String {
     let mut prompt = prompt_for_step(step, requirement);
 
-    // The implementer and reviewer work against the design contract when present.
-    if matches!(role, Role::Implementer | Role::Reviewer)
-        && let Some(contract) = design_contract
-    {
+    // The implementer, reviewer, and verifier all work against the design contract.
+    if let Some(contract) = design_contract {
         prompt.push_str("\n\n## Design contract\n\n");
         prompt.push_str(contract);
         prompt.push('\n');
-        prompt.push_str(if role == Role::Reviewer {
-            "\nCheck the implementation for consistency with this design contract.\n"
-        } else {
-            "\nImplement against this design contract.\n"
+        prompt.push_str(match step.role {
+            Role::Reviewer => {
+                "\nReturn VERDICT: BLOCK if the change does not meet the contract's \
+                 acceptance criteria.\n"
+            }
+            Role::Verifier => "\nVerification should confirm the contract's acceptance criteria.\n",
+            _ => "\nImplement against this design contract.\n",
         });
     }
 
-    match role {
-        Role::Reviewer => {
-            if let Some(msg) = last_implementer_message {
-                prompt.push_str("\n\n## Implementer result to review\n\n");
-                prompt.push_str(msg);
-                prompt.push('\n');
-                if !last_implementer_files.is_empty() {
-                    prompt.push_str("\nChanged files:\n");
-                    for file in last_implementer_files {
-                        prompt.push_str(&format!("- {file}\n"));
-                    }
-                }
-            }
-        }
-        Role::Implementer => {
-            if let Some(review) = last_review_message {
-                prompt.push_str("\n\n## Review findings to address\n\n");
-                prompt.push_str(review);
-                prompt.push('\n');
-            }
-        }
-        Role::Verifier => {
-            if let Some(msg) = last_implementer_message {
-                prompt.push_str("\n\n## Final implementation summary\n\n");
-                prompt.push_str(msg);
-                prompt.push('\n');
-            }
-        }
-        Role::Designer => {}
+    // A fix iteration's implementer is given the prior failures to resolve.
+    if step.role == Role::Implementer
+        && let Some(feedback) = feedback
+        && !feedback.trim().is_empty()
+    {
+        prompt.push_str("\n\n## Address these failures from the previous iteration\n\n");
+        prompt.push_str(feedback.trim());
+        prompt.push('\n');
     }
 
     prompt
-}
-
-/// Evaluate a step's gate against its real result. `is_revision` marks an implementer
-/// turn that follows a review; `blockers_pending` is true when the review found
-/// blocking issues that the revise turn is expected to address.
-fn evaluate_gate(
-    role: Role,
-    result: &InvocationResult,
-    is_revision: bool,
-    blockers_pending: bool,
-) -> (bool, String) {
-    if !result.success {
-        return (false, "invocation failed".to_string());
-    }
-    if result.message.trim().is_empty() {
-        return (false, "no artifact produced".to_string());
-    }
-    match role {
-        Role::Implementer => {
-            if !result.changed_files.is_empty() {
-                let notes = if is_revision {
-                    "revision addressed review"
-                } else {
-                    "scoped change produced"
-                };
-                (true, notes.to_string())
-            } else if is_revision {
-                if blockers_pending {
-                    (false, "blocking review findings not addressed".to_string())
-                } else {
-                    (true, "no revision needed".to_string())
-                }
-            } else {
-                (false, "implementer reported no change".to_string())
-            }
-        }
-        Role::Designer => (true, "design contract produced".to_string()),
-        Role::Reviewer => (true, "review produced".to_string()),
-        Role::Verifier => (true, "verification reported".to_string()),
-    }
 }
 
 /// Render an [`InvocationResult`] as a per-step `result.md`.
@@ -675,20 +795,19 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::adapter::AgentInvocation;
     use crate::stub::StubInvoker;
     use crate::workspace::RunWorkspace;
-    use crate::{LoopOptions, generate_plan};
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn temp_base(tag: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir =
@@ -698,166 +817,56 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn full_loop_passes_and_persists_artifacts() {
-        let base = temp_base("full");
-        let source = temp_base("full-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
-
-        assert!(run.all_passed());
-        assert!(!run.halted);
-        assert_eq!(run.outcomes.len(), plan.steps.len());
-        // run artifacts on disk
-        assert!(ws.root.join("plan.md").exists());
-        assert!(ws.root.join("report.md").exists());
-        assert!(ws.root.join("run.json").exists());
-        let report = fs::read_to_string(ws.root.join("report.md")).unwrap();
-        assert!(report.contains("all gates passed"));
-        // per-agent files exist
-        let impl_dir = ws.agent_dir(1, Role::Implementer, Adapter::Claude);
-        assert!(impl_dir.join("prompt.md").exists());
-        assert!(impl_dir.join("result.md").exists());
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    #[test]
-    fn design_run_writes_contract_and_feeds_implementer() {
-        let base = temp_base("design");
-        let source = temp_base("design-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan(
-            "Build dashboard",
-            LoopOptions {
-                include_design: true,
-                ..LoopOptions::default()
-            },
-        );
-
-        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
-        assert!(run.all_passed());
-
-        // contract persisted as a run artifact and inside the workspace
-        assert!(ws.root.join("design-contract.md").exists());
-        assert!(ws.workspace_dir.join("DESIGN_CONTRACT.md").exists());
-
-        // the implementer's prompt was given the contract
-        let impl_prompt =
-            fs::read_to_string(ws.agent_dir(2, Role::Implementer, Adapter::Claude).join("prompt.md"))
-                .unwrap();
-        assert!(impl_prompt.contains("## Design contract"));
-        assert!(impl_prompt.contains("Implement against this design contract"));
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    #[test]
-    fn reviewer_prompt_includes_implementer_artifact() {
-        let base = temp_base("artifact");
-        let source = temp_base("artifact-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
-
-        let reviewer_prompt =
-            fs::read_to_string(ws.agent_dir(2, Role::Reviewer, Adapter::Codex).join("prompt.md"))
-                .unwrap();
-        assert!(reviewer_prompt.contains("Implementer result to review"));
-        assert!(reviewer_prompt.contains("IMPLEMENTATION_NOTES.md"));
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    /// An invoker that fails the reviewer step to exercise the blocking-gate halt.
-    struct FailReviewerInvoker {
-        seen: Mutex<Vec<Role>>,
-    }
-
-    impl Invoker for FailReviewerInvoker {
-        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
-            self.seen.lock().unwrap().push(inv.role);
-            if inv.role == Role::Reviewer {
-                return InvocationResult::failure("reviewer could not run");
-            }
-            StubInvoker.invoke(inv)
+    fn config(max_iters: usize, verify: Option<&str>) -> LoopConfig {
+        LoopConfig {
+            requirement: "Add login".to_string(),
+            include_design: false,
+            designer: Adapter::Claude,
+            implementer: Adapter::Claude,
+            reviewers: vec![Adapter::Codex],
+            max_iters,
+            verify_command: verify.map(|s| s.to_string()),
         }
     }
 
-    /// Reviewer flags blockers; the implementer's revise turn makes no change.
-    struct BlockNoFixInvoker {
-        implementer_calls: AtomicUsize,
-    }
-
-    impl Invoker for BlockNoFixInvoker {
-        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
-            match inv.role {
-                Role::Reviewer => InvocationResult {
-                    success: true,
-                    message: "A blocking issue exists.\nVERDICT: BLOCK".to_string(),
-                    changed_files: Vec::new(),
-                    transcript: String::new(),
-                },
-                Role::Implementer => {
-                    let calls = self.implementer_calls.fetch_add(1, Ordering::Relaxed);
-                    if calls == 0 {
-                        StubInvoker.invoke(inv)
-                    } else {
-                        InvocationResult {
-                            success: true,
-                            message: "I did not change anything.".to_string(),
-                            changed_files: Vec::new(),
-                            transcript: String::new(),
-                        }
-                    }
-                }
-                _ => StubInvoker.invoke(inv),
-            }
-        }
+    fn run(cfg: &LoopConfig, invoker: &(dyn Invoker + Sync)) -> (LoopRun, RunWorkspace) {
+        let base = temp_base("base");
+        let source = temp_base("src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let run = execute_loop(cfg, &ws, invoker, None).unwrap();
+        (run, ws)
     }
 
     #[test]
-    fn revise_blocks_when_blockers_not_addressed() {
-        let base = temp_base("block-nofix");
-        let source = temp_base("block-nofix-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let invoker = BlockNoFixInvoker {
-            implementer_calls: AtomicUsize::new(0),
-        };
-        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
-
-        // reviewer recorded blockers
-        let reviewer = &run.outcomes[1];
-        assert_eq!(reviewer.role, Role::Reviewer);
-        assert!(reviewer.review_verdict.as_ref().unwrap().has_blockers);
-        // revise turn made no change while blockers were pending -> blocked
-        assert!(run.halted);
-        let revise = &run.outcomes[2];
-        assert!(!revise.gate_passed);
-        assert_eq!(revise.gate_notes, "blocking review findings not addressed");
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
+    fn converges_in_one_iteration() {
+        let (run, ws) = run(&config(3, None), &StubInvoker);
+        assert_eq!(run.stop_reason, StopReason::Converged);
+        assert_eq!(run.iterations, 1);
+        assert!(run.all_passed());
+        // implement (1) + review (2) only
+        assert!(ws.agent_dir(1, Role::Implementer, Adapter::Claude).join("result.md").exists());
+        assert!(ws.agent_dir(2, Role::Reviewer, Adapter::Codex).join("result.md").exists());
+        // the cumulative diff captured the stub's new file and a changed-files listing
+        assert!(run.changed.iter().any(|c| c.path == "IMPLEMENTATION_NOTES.md"));
+        assert!(ws.root.join("changes.diff").exists());
+        let listing = fs::read_to_string(ws.root.join("changed-files.txt")).unwrap();
+        assert!(listing.contains("IMPLEMENTATION_NOTES.md"));
+        let _ = fs::remove_dir_all(ws.root.parent().unwrap().parent().unwrap());
     }
 
-    /// Reviewer flags blockers; the implementer's revise turn makes a change (stub
-    /// implementer always writes a file), so the loop proceeds.
-    struct BlockThenFixInvoker;
-
-    impl Invoker for BlockThenFixInvoker {
+    /// Reviewer blocks on iteration 1 and passes on iteration 2.
+    struct BlockThenPass {
+        reviews: Mutex<usize>,
+    }
+    impl Invoker for BlockThenPass {
         fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
             if inv.role == Role::Reviewer {
+                let mut n = self.reviews.lock().unwrap();
+                *n += 1;
+                let verdict = if *n == 1 { "VERDICT: BLOCK" } else { "VERDICT: PASS" };
                 return InvocationResult {
                     success: true,
-                    message: "Fix needed.\nVERDICT: BLOCK".to_string(),
+                    message: format!("blocker number {n}\n{verdict}"),
                     changed_files: Vec::new(),
                     transcript: String::new(),
                 };
@@ -867,173 +876,29 @@ mod tests {
     }
 
     #[test]
-    fn revise_passes_when_blockers_addressed() {
-        let base = temp_base("block-fix");
-        let source = temp_base("block-fix-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let run =
-            execute_plan(&plan, &ws, &BlockThenFixInvoker, &ExecuteOptions::default(), None).unwrap();
-
-        assert!(run.all_passed());
-        let revise = &run.outcomes[2];
-        assert!(revise.gate_passed);
-        assert_eq!(revise.gate_notes, "revision addressed review");
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    /// Reviewer that emits BLOCK for Codex and PASS for Claude, to check aggregation.
-    struct PerAdapterReviewInvoker;
-
-    impl Invoker for PerAdapterReviewInvoker {
-        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
-            if inv.role == Role::Reviewer {
-                let verdict = if inv.adapter == Adapter::Codex {
-                    "VERDICT: BLOCK"
-                } else {
-                    "VERDICT: PASS"
-                };
-                return InvocationResult {
-                    success: true,
-                    message: format!("Review from {}.\n{verdict}", inv.adapter.display_name()),
-                    changed_files: Vec::new(),
-                    transcript: String::new(),
-                };
-            }
-            StubInvoker.invoke(inv)
-        }
-    }
-
-    #[test]
-    fn two_reviewers_run_and_aggregate() {
-        let base = temp_base("multi");
-        let source = temp_base("multi-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan(
-            "Add login",
-            LoopOptions {
-                reviewers: vec![Adapter::Codex, Adapter::Claude],
-                ..LoopOptions::default()
-            },
-        );
-
-        let run = execute_plan(
-            &plan,
-            &ws,
-            &PerAdapterReviewInvoker,
-            &ExecuteOptions::default(),
-            None,
+    fn iterates_until_review_passes_and_feeds_back() {
+        let invoker = BlockThenPass { reviews: Mutex::new(0) };
+        let (run, ws) = run(&config(3, None), &invoker);
+        assert_eq!(run.stop_reason, StopReason::Converged);
+        assert_eq!(run.iterations, 2);
+        // iteration 2's implement step is step 3; its prompt carries the blocker feedback.
+        let p = fs::read_to_string(
+            ws.agent_dir(3, Role::Implementer, Adapter::Claude).join("prompt.md"),
         )
         .unwrap();
-
-        // both reviewers produced artifacts and verdicts
-        let reviewers: Vec<&StepOutcome> = run
-            .outcomes
-            .iter()
-            .filter(|o| o.role == Role::Reviewer)
-            .collect();
-        assert_eq!(reviewers.len(), 2);
-        assert!(
-            ws.agent_dir(2, Role::Reviewer, Adapter::Codex)
-                .join("result.md")
-                .exists()
-        );
-        assert!(
-            ws.agent_dir(3, Role::Reviewer, Adapter::Claude)
-                .join("result.md")
-                .exists()
-        );
-        // Codex blocked; aggregation marks blockers pending, so the stub revise turn
-        // (which writes a file) addresses them and the loop still passes.
-        let codex = reviewers.iter().find(|o| o.adapter == Adapter::Codex).unwrap();
-        assert!(codex.review_verdict.as_ref().unwrap().has_blockers);
-        assert!(run.all_passed());
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
+        assert!(p.contains("Address these failures"));
+        assert!(p.contains("blocker number 1"));
+        let _ = fs::remove_dir_all(ws.root.parent().unwrap().parent().unwrap());
     }
 
-    #[test]
-    fn reviewer_outcome_carries_pass_verdict() {
-        let base = temp_base("verdict");
-        let source = temp_base("verdict-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
-        let reviewer = &run.outcomes[1];
-        let verdict = reviewer.review_verdict.as_ref().unwrap();
-        assert!(!verdict.has_blockers);
-        assert_eq!(verdict.label(), "PASS");
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    #[test]
-    fn command_verifier_passes_when_command_succeeds() {
-        let base = temp_base("verify-ok");
-        let source = temp_base("verify-ok-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let options = ExecuteOptions {
-            verify_command: Some("exit 0".to_string()),
-        };
-        let run = execute_plan(&plan, &ws, &StubInvoker, &options, None).unwrap();
-
-        assert!(run.all_passed());
-        let verifier = run.outcomes.last().unwrap();
-        assert_eq!(verifier.role, Role::Verifier);
-        assert!(verifier.gate_passed);
-        assert!(verifier.result.message.contains("exited 0"));
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    #[test]
-    fn command_verifier_blocks_when_command_fails() {
-        let base = temp_base("verify-fail");
-        let source = temp_base("verify-fail-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let options = ExecuteOptions {
-            verify_command: Some("exit 1".to_string()),
-        };
-        let run = execute_plan(&plan, &ws, &StubInvoker, &options, None).unwrap();
-
-        assert!(!run.all_passed());
-        assert!(run.halted);
-        let verifier = run.outcomes.last().unwrap();
-        assert_eq!(verifier.role, Role::Verifier);
-        assert!(!verifier.gate_passed);
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
-    }
-
-    /// Implementer changes a file on the first turn but makes no change on the
-    /// revise turn (nothing to fix). The reviewer/verifier defer to the stub.
-    struct NoRevisionInvoker {
-        implementer_calls: AtomicUsize,
-    }
-
-    impl Invoker for NoRevisionInvoker {
+    /// Reviewer always blocks.
+    struct AlwaysBlock;
+    impl Invoker for AlwaysBlock {
         fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
-            if inv.role == Role::Implementer {
-                let calls = self.implementer_calls.fetch_add(1, Ordering::Relaxed);
-                if calls == 0 {
-                    return StubInvoker.invoke(inv); // first turn writes a file
-                }
-                // revise turn: nothing to change
+            if inv.role == Role::Reviewer {
                 return InvocationResult {
                     success: true,
-                    message: "No changes needed; the review raised no blockers.".to_string(),
+                    message: "still broken\nVERDICT: BLOCK".to_string(),
                     changed_files: Vec::new(),
                     transcript: String::new(),
                 };
@@ -1043,48 +908,52 @@ mod tests {
     }
 
     #[test]
-    fn revise_turn_passes_when_no_change_is_needed() {
-        let base = temp_base("norev");
-        let source = temp_base("norev-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
+    fn stops_at_max_iters_without_converging() {
+        let (run, _ws) = run(&config(2, None), &AlwaysBlock);
+        assert_eq!(run.stop_reason, StopReason::MaxIters);
+        assert_eq!(run.iterations, 2);
+        assert!(!run.all_passed());
+    }
 
-        let invoker = NoRevisionInvoker {
-            implementer_calls: AtomicUsize::new(0),
-        };
-        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
-
-        assert!(run.all_passed(), "revise turn with no change should not block");
-        let revise = &run.outcomes[2];
-        assert_eq!(revise.role, Role::Implementer);
-        assert!(revise.gate_passed);
-        assert_eq!(revise.gate_notes, "no revision needed");
-
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
+    /// Implementer fails immediately.
+    struct FailImplement;
+    impl Invoker for FailImplement {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            if inv.role == Role::Implementer {
+                return InvocationResult::failure("implementer crashed");
+            }
+            StubInvoker.invoke(inv)
+        }
     }
 
     #[test]
-    fn blocking_gate_halts_the_loop() {
-        let base = temp_base("halt");
-        let source = temp_base("halt-src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        let plan = generate_plan("Add login", LoopOptions::default());
-
-        let invoker = FailReviewerInvoker {
-            seen: Mutex::new(Vec::new()),
-        };
-        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
-
-        assert!(run.halted);
+    fn hard_failure_halts_immediately() {
+        let (run, _ws) = run(&config(3, None), &FailImplement);
+        assert_eq!(run.stop_reason, StopReason::StepFailed);
+        assert_eq!(run.iterations, 1);
         assert!(!run.all_passed());
-        // implementer + reviewer ran; the loop stopped before the revise step
-        let seen = invoker.seen.lock().unwrap();
-        assert_eq!(seen.as_slice(), &[Role::Implementer, Role::Reviewer]);
-        let report = fs::read_to_string(ws.root.join("report.md")).unwrap();
-        assert!(report.contains("halted on a blocking gate"));
+    }
 
-        let _ = fs::remove_dir_all(&base);
-        let _ = fs::remove_dir_all(&source);
+    #[test]
+    fn verify_command_drives_convergence() {
+        let (pass, _) = run(&config(2, Some("exit 0")), &StubInvoker);
+        assert_eq!(pass.stop_reason, StopReason::Converged);
+        assert_eq!(pass.iterations, 1);
+
+        let (fail, _) = run(&config(2, Some("exit 1")), &StubInvoker);
+        assert_eq!(fail.stop_reason, StopReason::MaxIters);
+        assert_eq!(fail.iterations, 2);
+        assert!(!fail.all_passed());
+    }
+
+    #[test]
+    fn design_only_run_writes_contract() {
+        let mut cfg = config(0, None);
+        cfg.include_design = true;
+        let (run, ws) = run(&cfg, &StubInvoker);
+        assert_eq!(run.stop_reason, StopReason::DesignOnly);
+        assert!(run.all_passed());
+        assert!(ws.root.join("design-contract.md").exists());
+        assert!(ws.agent_dir(1, Role::Designer, Adapter::Claude).join("result.md").exists());
     }
 }

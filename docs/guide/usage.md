@@ -1,8 +1,9 @@
 # Loope Usage Guide
 
 Loope is a Loop Engineering orchestrator: it turns one requirement into a repeatable
-multi-agent loop — **design → implement → review → revise → verify** — driving real
-coding-agent CLIs (Claude, Codex, OpenCode) with clear roles, artifacts, and gates.
+multi-agent loop — an optional **design** step, then **implement → review → verify**
+repeated until it converges — driving real coding-agent CLIs (Claude, Codex, OpenCode)
+with clear roles, artifacts, and gates.
 
 This is the complete usage reference. For the design rationale, see the
 [SDD documents](#sdd--design-documents).
@@ -79,17 +80,31 @@ real run never touches your real source unless you pass `--in-place`.
 
 ## Core concepts
 
-**Loop.** A controlled sequence of agent turns. The default loop is:
+**Loop & iterations.** A run is an optional **design** step (once), then a sequence of
+**iterations**. Each iteration is:
 
 ```text
-requirement → implement (Claude) → review (Codex) → revise (Claude) → verify
+implement / fix → review (1..N reviewers) → verify
 ```
 
-With `--design`, a design step is inserted first:
+Iteration 1's implementer does the initial implementation; each later iteration is a
+**fix** turn whose prompt carries the previous iteration's review blockers and verifier
+failure output, asked to resolve them.
 
 ```text
-requirement → design (Claude) → implement → review → revise → verify
+requirement → [implement → review → verify] → [fix → review → verify] → … → converged
 ```
+
+**Convergence & stop reasons.** After each iteration Loope decides whether it is done:
+
+- **Converged** — verification passed and no reviewer reported a blocker. Stops, success.
+- **Stopped at the iteration cap** — ran `--max-iters` iterations (default 3) without
+  converging. Stops, failure.
+- **Halted: a step failed** — an agent invocation failed or timed out; retrying a crashed
+  agent is not useful, so the loop stops immediately.
+
+The iteration count and stop reason are shown live, in `report.md`, and in `run.json`
+(`iterations`, `stop_reason`, `converged`). `--max-iters 1` reproduces a single pass.
 
 **Roles.** `designer`, `implementer`, `reviewer`, `verifier`. Each role maps to an
 adapter (overridable). Implementer and designer are write-capable; reviewer and verifier
@@ -98,10 +113,11 @@ run read-only where the CLI supports it.
 **Adapters.** Data describing how to launch a coding-agent CLI: `claude`, `codex`,
 `opencode`, `generic`. See [Adapters & providers](#adapters--providers).
 
-**Gates.** After every step Loope checks a gate. A step passes only if it succeeded and
-produced its expected artifact. Reviewers emit a structured verdict (`VERDICT: PASS` /
-`VERDICT: BLOCK`); if a review found blockers and the revise turn changes nothing, the
-loop **blocks**. A blocking gate halts the loop and the report says which gate failed.
+**Verification.** With `--verify-cmd C`, Loope runs `C` in the workspace each iteration
+and verification passes iff it exits 0. With no command, verification is informational
+(treated as passing) and convergence rests on the reviewers' verdicts. Reviewers emit a
+structured verdict (`VERDICT: PASS` / `VERDICT: BLOCK`); any `BLOCK` keeps the loop
+iterating with that feedback.
 
 **Workspace & artifacts.** Each run gets its own directory under `.loope/runs/<run-id>/`
 with a copied working tree and a numbered directory per step recording the exact prompt,
@@ -133,6 +149,8 @@ Execute the full loop end to end and write a run directory.
 | --- | --- |
 | `--dry-run` | Execute with deterministic stub agents (no CLIs, no network) |
 | `--design` | Insert a design-contract step before implementation |
+| `--max-iters N` | Cap the implement → review → verify iterations (default `3`; `1` = single pass) |
+| `--show-diff` | After the run, print the cumulative diff of everything that changed |
 | `--workdir DIR` | Source directory to run against (default: current directory) |
 | `--in-place` | Edit the working directory directly instead of a copied tree |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`) |
@@ -161,6 +179,20 @@ Print a past run's report.
 
 - `--diff` — also print the run's unified diffs (hunked, with a line-number gutter).
 - `--color WHEN`.
+
+### `loope apply <run-id>`
+
+Copy a run's changed/added files from its `workspace/` back into the working directory,
+so a converged run can be landed in your real tree. It lists what it applied and **never
+deletes** anything.
+
+```bash
+loope apply run-0001                 # apply into the current directory
+loope apply run-0001 --workdir ./app # apply into a specific tree
+```
+
+The applied set is the run's cumulative changed files (`changed-files.txt`). Review the
+diff first with `loope show <run-id> --diff` or `loope run --show-diff`.
 
 ### `loope adapters`
 
@@ -214,11 +246,13 @@ Everything about a run lives under `.loope/runs/<run-id>/` (gitignored):
 ```text
 .loope/runs/run-0001/
   plan.md                 the generated loop plan
-  report.md               final loop report (per-step status, timing, outcome)
-  run.json                machine-readable run record
+  report.md               final loop report (steps grouped by iteration, outcome)
+  run.json                machine-readable run record (iterations, stop_reason, converged)
+  changes.diff            the run's cumulative diff (original source → final workspace)
+  changed-files.txt       the cumulative changed-file listing (used by `loope apply`)
   design-contract.md      the Design Contract (with --design or `loope design`)
   workspace/              the working tree the agents read and edit (a copy by default)
-  agents/                 one numbered directory per step (the revise turn is its own)
+  agents/                 one numbered directory per step, across all iterations
     01-implementer-claude/
       home/               this step's private CLI config/session dir
       prompt.md           the exact prompt sent
@@ -227,12 +261,12 @@ Everything about a run lives under `.loope/runs/<run-id>/` (gitignored):
       result.md           the parsed result (message + changed files)
       changes.diff        the unified diff this step produced (write steps)
     02-reviewer-codex/...
-    03-implementer-claude/...
+    03-implementer-claude/   the next iteration's fix turn (its own directory)
     ...
 ```
 
-Agent directories are numbered by step id, so the implement turn and the revise turn keep
-separate, complete records.
+Agent directories are numbered by step id and span every iteration, so each iteration's
+implement, review, and verify turns keep separate, complete records.
 
 ## Terminal UI
 
@@ -254,8 +288,10 @@ the agent is quiet:
   ✓ 1 implementer · Claude   0:51   src/lib.rs +12 −0              ← committed on finish
 ```
 
-The final summary lists every step with its gate result, verdict, change stats, and
-duration, plus the run's total time.
+Between iterations Loope commits an `∞ iteration k/N` header, so the live feed and the
+final report both show which iteration each step belongs to. The final summary lists every
+step with its gate result, verdict, change stats, and duration, grouped by iteration, plus
+the run's total time and stop reason.
 
 - `--no-progress` keeps the committed lines but drops the animation.
 - `--quiet` suppresses the per-event feed (keeps step results + summary).
@@ -265,16 +301,20 @@ duration, plus the run's total time.
 
 ## Diffs & change tracking
 
-Because a CLI cannot reliably self-report what it changed, Loope detects a write step's
-changes by diffing the workspace before and after. Each write step records `+added
-−removed` line stats and a unified diff (`changes.diff`).
+Because a CLI cannot reliably self-report what it changed, Loope detects changes by
+diffing the workspace before and after. Each write step records `+added −removed` line
+stats and a per-step unified diff; the run as a whole records a **cumulative diff**
+(original source → final workspace) in `<run>/changes.diff`, summarized in the report as
+`Changed: N file(s) +X −Y`.
 
 ```bash
-loope show run-0001 --diff
+loope run --show-diff "..."     # print the cumulative diff right after the run
+loope show run-0001 --diff      # report + the run's cumulative diff
+loope apply run-0001            # land those changes into your working tree
 ```
 
-renders the diffs as `@@` hunks with a line-number gutter and `+`/`−` coloring; large
-diffs collapse with a `… +N more lines` note.
+Diffs render as `@@` hunks with a line-number gutter and `+`/`−` coloring; large diffs
+collapse with a `… +N more lines` note.
 
 ## Design Contracts
 
@@ -288,8 +328,10 @@ loope run --design --verify-cmd "cargo test" "..."    # design-aware loop
 ```
 
 The contract is saved to `<run>/design-contract.md` and copied into the workspace as
-`DESIGN_CONTRACT.md`, and is woven into the implementer prompt ("implement against the
-contract") and the reviewer prompt ("check design consistency").
+`DESIGN_CONTRACT.md`, and is woven into the implementer, reviewer, and verifier prompts.
+When a contract is present, reviewers are told to return `VERDICT: BLOCK` if the change
+does not meet the contract's acceptance criteria — so convergence requires the reviewers
+to judge the contract satisfied, not merely that a command exited zero.
 
 ## Safety & isolation
 
@@ -309,8 +351,8 @@ contract") and the reviewer prompt ("check design consistency").
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success — the loop ran and all gates passed |
-| `1` | The loop halted on a blocking gate, or a run/IO error occurred |
+| `0` | Success — the loop **converged** (or a design-only run produced its contract) |
+| `1` | Did not converge (hit `--max-iters`), a step failed/timed out, or a run/IO error |
 | `2` | Usage error (missing requirement, unknown flag value, bad workdir, etc.) |
 
 This makes `loope run` usable as a gate in scripts and pipelines:
