@@ -18,7 +18,11 @@ use crate::{Adapter, Role};
 pub type FsSnapshot = BTreeMap<String, (u64, u64)>;
 
 /// Directory names skipped when seeding a workspace from a source tree.
-const SKIP_DIRS: &[&str] = &[".git", ".loope", "target", "node_modules"];
+const SKIP_DIRS: &[&str] = &[".git", ".loope", ".claude", "target", "node_modules"];
+
+/// File names skipped when seeding a workspace and when snapshotting for change
+/// detection (editor/OS cruft that an agent should never see or "change").
+const SKIP_FILES: &[&str] = &[".DS_Store"];
 
 /// One run's directory tree.
 #[derive(Clone, Debug)]
@@ -158,6 +162,9 @@ fn collect_snapshot(base: &Path, dir: &Path, out: &mut FsSnapshot) -> io::Result
             }
             collect_snapshot(base, &entry.path(), out)?;
         } else if file_type.is_file() {
+            if SKIP_FILES.contains(&name.as_ref()) {
+                continue;
+            }
             let path = entry.path();
             let rel = path
                 .strip_prefix(base)
@@ -208,6 +215,9 @@ fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
             fs::create_dir_all(&target)?;
             copy_tree(&entry.path(), &target)?;
         } else if file_type.is_file() {
+            if SKIP_FILES.contains(&name.as_ref()) {
+                continue;
+            }
             fs::copy(entry.path(), dst.join(&file_name))?;
         }
     }
@@ -260,14 +270,19 @@ mod tests {
         let base = temp_base("create");
         let source = temp_base("src");
         fs::write(source.join("a.txt"), "hello").unwrap();
+        fs::write(source.join(".DS_Store"), "junk").unwrap();
         fs::create_dir_all(source.join("target")).unwrap();
         fs::write(source.join("target").join("big.bin"), "skip me").unwrap();
+        fs::create_dir_all(source.join(".claude")).unwrap();
+        fs::write(source.join(".claude").join("settings.json"), "{}").unwrap();
 
         let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
         assert_eq!(ws.run_id, "run-0001");
-        // copied the file but skipped target/
+        // copied the real file but skipped target/, .claude/, and .DS_Store
         assert!(ws.workspace_dir.join("a.txt").exists());
         assert!(!ws.workspace_dir.join("target").exists());
+        assert!(!ws.workspace_dir.join(".claude").exists());
+        assert!(!ws.workspace_dir.join(".DS_Store").exists());
 
         let h1 = ws.agent_home(Role::Implementer, Adapter::Claude).unwrap();
         let h2 = ws.agent_home(Role::Reviewer, Adapter::Codex).unwrap();
