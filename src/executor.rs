@@ -17,6 +17,14 @@ pub struct ExecuteOptions {
     pub verify_command: Option<String>,
 }
 
+/// Observes step execution so a frontend can render live progress.
+pub trait StepObserver {
+    /// Called just before a step's agent (or verify command) runs.
+    fn on_step_start(&self, step: &crate::LoopStep);
+    /// Called once a step's outcome (including its gate result) is known.
+    fn on_step_finish(&self, outcome: &StepOutcome);
+}
+
 /// Outcome of one executed step.
 #[derive(Clone, Debug)]
 pub struct StepOutcome {
@@ -122,6 +130,7 @@ pub fn execute_plan(
     workspace: &RunWorkspace,
     invoker: &dyn Invoker,
     options: &ExecuteOptions,
+    observer: Option<&dyn StepObserver>,
 ) -> io::Result<LoopRun> {
     atomic_write(&workspace.root.join("plan.md"), &plan.to_markdown())?;
 
@@ -146,6 +155,10 @@ pub fn execute_plan(
         let agent_dir = workspace.agent_dir(step.role, step.adapter);
         let home = workspace.agent_home(step.role, step.adapter)?;
         atomic_write(&agent_dir.join("prompt.md"), &prompt)?;
+
+        if let Some(observer) = observer {
+            observer.on_step_start(step);
+        }
 
         let read_only = read_only_for(step.role);
         let result = if step.role == Role::Verifier && options.verify_command.is_some() {
@@ -197,7 +210,7 @@ pub fn execute_plan(
             _ => {}
         }
 
-        outcomes.push(StepOutcome {
+        let outcome = StepOutcome {
             step_id: step.id,
             role: step.role,
             adapter: step.adapter,
@@ -206,7 +219,11 @@ pub fn execute_plan(
             gate: step.gate.clone(),
             gate_passed,
             gate_notes,
-        });
+        };
+        if let Some(observer) = observer {
+            observer.on_step_finish(&outcome);
+        }
+        outcomes.push(outcome);
 
         if !gate_passed {
             halted = true;
@@ -404,7 +421,7 @@ mod tests {
         let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
         let plan = generate_plan("Add login", LoopOptions::default());
 
-        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default()).unwrap();
+        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
 
         assert!(run.all_passed());
         assert!(!run.halted);
@@ -431,7 +448,7 @@ mod tests {
         let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
         let plan = generate_plan("Add login", LoopOptions::default());
 
-        execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default()).unwrap();
+        execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
 
         let reviewer_prompt =
             fs::read_to_string(ws.agent_dir(Role::Reviewer, Adapter::Codex).join("prompt.md"))
@@ -468,7 +485,7 @@ mod tests {
         let options = ExecuteOptions {
             verify_command: Some("exit 0".to_string()),
         };
-        let run = execute_plan(&plan, &ws, &StubInvoker, &options).unwrap();
+        let run = execute_plan(&plan, &ws, &StubInvoker, &options, None).unwrap();
 
         assert!(run.all_passed());
         let verifier = run.outcomes.last().unwrap();
@@ -490,7 +507,7 @@ mod tests {
         let options = ExecuteOptions {
             verify_command: Some("exit 1".to_string()),
         };
-        let run = execute_plan(&plan, &ws, &StubInvoker, &options).unwrap();
+        let run = execute_plan(&plan, &ws, &StubInvoker, &options, None).unwrap();
 
         assert!(!run.all_passed());
         assert!(run.halted);
@@ -538,7 +555,7 @@ mod tests {
         let invoker = NoRevisionInvoker {
             implementer_calls: RefCell::new(0),
         };
-        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default()).unwrap();
+        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
 
         assert!(run.all_passed(), "revise turn with no change should not block");
         let revise = &run.outcomes[2];
@@ -560,7 +577,7 @@ mod tests {
         let invoker = FailReviewerInvoker {
             seen: RefCell::new(Vec::new()),
         };
-        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default()).unwrap();
+        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
 
         assert!(run.halted);
         assert!(!run.all_passed());

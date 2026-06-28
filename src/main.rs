@@ -4,11 +4,14 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use loope::executor::{ExecuteOptions, execute_plan};
+mod ui;
+
+use loope::executor::{ExecuteOptions, StepObserver, execute_plan};
 use loope::stub::StubInvoker;
 use loope::subprocess::SubprocessInvoker;
 use loope::workspace::RunWorkspace;
 use loope::{Adapter, LoopOptions, adapter::Invoker, generate_plan, list_adapters};
+use ui::{ColorChoice, PrettyObserver};
 
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
@@ -59,6 +62,7 @@ fn cmd_run(args: &mut Vec<String>) {
     let in_place = remove_flag(args, "--in-place");
     let include_design = remove_flag(args, "--design");
     let isolate_home = remove_flag(args, "--isolate-home");
+    let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     let approve = remove_value(args, "--approve").unwrap_or_else(|| "auto".to_string());
     let workdir = remove_value(args, "--workdir");
     let verify_command = remove_value(args, "--verify-cmd");
@@ -101,6 +105,11 @@ fn cmd_run(args: &mut Vec<String>) {
         process::exit(1);
     }
 
+    if color {
+        ui::banner(true);
+        ui::pipeline(&plan, true);
+    }
+
     let workspace = match RunWorkspace::create(&base, &source, in_place) {
         Ok(ws) => ws,
         Err(err) => {
@@ -115,8 +124,9 @@ fn cmd_run(args: &mut Vec<String>) {
         Box::new(SubprocessInvoker { isolate_home })
     };
     let options = ExecuteOptions { verify_command };
+    let observer: Option<&dyn StepObserver> = if color { Some(&PrettyObserver) } else { None };
 
-    let run = match execute_plan(&plan, &workspace, invoker.as_ref(), &options) {
+    let run = match execute_plan(&plan, &workspace, invoker.as_ref(), &options, observer) {
         Ok(run) => run,
         Err(err) => {
             eprintln!("run failed: {err}");
@@ -124,8 +134,7 @@ fn cmd_run(args: &mut Vec<String>) {
         }
     };
 
-    println!("{}", run.to_report_markdown());
-    println!("\nRun directory: {}", workspace.root.display());
+    ui::summary(&run, &workspace.root, color);
 
     if !run.all_passed() {
         process::exit(1);
@@ -147,9 +156,7 @@ fn cmd_runs() {
         return;
     }
     ids.sort();
-    for id in ids {
-        println!("{id}");
-    }
+    ui::runs_list(&ids, ColorChoice::Auto.enabled());
 }
 
 fn cmd_show(args: &[String]) {
@@ -256,6 +263,7 @@ fn remove_adapter(args: &mut Vec<String>, flag: &str) -> Option<Adapter> {
 }
 
 fn print_help() {
+    ui::banner(ColorChoice::Auto.enabled());
     println!(
         "Loope - Loop Engineering orchestrator for collaborative coding agents.
 
@@ -283,6 +291,7 @@ run flags:
   --designer A    Override the designer adapter (with --design).
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).
+  --color WHEN    'auto' (default), 'always', or 'never' for terminal coloring.
 
 Runs are written to .loope/runs/<run-id>/."
     );

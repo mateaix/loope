@@ -102,6 +102,16 @@ loope adapters                               # list supported adapters
 
 `.loope/` is gitignored, so runs never pollute version control.
 
+## Terminal UI
+
+On a TTY, `loope run` renders a small visual identity built from Loope's own motifs —
+the `∞` loop glyph, a `design → implement → review → verify` pipeline, live per-step
+progress (`running…` resolving in place to `✓`/`✗`), and a colored summary box. Agents
+are tinted by the logo's palette: Claude blue, Codex orange.
+
+Color is automatic on a terminal and off when piped or when `NO_COLOR` is set; override
+with `--color auto|always|never`. Piped/CI output stays plain markdown.
+
 ## Supported adapters
 
 | Adapter     | Role                                | Binary (override env)        |
@@ -138,6 +148,7 @@ exercise the real agents manually:
 
 - [MVP Spec](docs/specs/2026-06-28-loope-mvp-spec.md)
 - [Agent Integration Spec](docs/specs/2026-06-28-loope-agent-integration-spec.md)
+- [CLI UX Spec](docs/specs/2026-06-28-loope-cli-ux-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
