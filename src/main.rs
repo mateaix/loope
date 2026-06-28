@@ -70,6 +70,9 @@ fn cmd_run(args: &mut Vec<String>) {
     let approve = remove_value(args, "--approve").unwrap_or_else(|| "auto".to_string());
     let workdir = remove_value(args, "--workdir");
     let verify_command = remove_value(args, "--verify-cmd");
+    let opencode_model = remove_value(args, "--opencode-model")
+        .or_else(|| std::env::var("LOOPE_OPENCODE_MODEL").ok())
+        .filter(|m| !m.trim().is_empty());
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
@@ -135,7 +138,10 @@ fn cmd_run(args: &mut Vec<String>) {
     let invoker: Box<dyn Invoker + Sync> = if dry_run {
         Box::new(StubInvoker)
     } else {
-        Box::new(SubprocessInvoker { isolate_home })
+        Box::new(SubprocessInvoker {
+            isolate_home,
+            opencode_model: opencode_model.clone(),
+        })
     };
     let options = ExecuteOptions { verify_command };
 
@@ -371,9 +377,14 @@ fn preset_options(preset: Option<&str>) -> LoopOptions {
             reviewers: reviewers(&[Adapter::Codex, Adapter::Claude]),
             ..LoopOptions::default()
         },
+        "opencode-codex" => LoopOptions {
+            implementer: Adapter::OpenCode,
+            reviewers: reviewers(&[Adapter::Codex]),
+            ..LoopOptions::default()
+        },
         other => {
             eprintln!(
-                "unknown preset: {other} (try claude-codex, codex-claude, claude-solo, dual-review)"
+                "unknown preset: {other} (try claude-codex, codex-claude, claude-solo, dual-review, opencode-codex)"
             );
             process::exit(2);
         }
@@ -437,11 +448,12 @@ run flags:
   --in-place      Operate on the working directory directly instead of a copied tree.
   --workdir DIR   Source directory to run against (default: current directory).
   --approve MODE  'auto' (default) or 'manual' (confirm before launching agents).
-  --preset NAME   claude-codex | codex-claude | claude-solo | dual-review.
+  --preset NAME   claude-codex | codex-claude | claude-solo | dual-review | opencode-codex.
   --implementer A Override the implementer adapter (claude|codex|opencode|generic).
   --reviewer A    Override the reviewer adapter (single).
   --reviewers A,B Run several reviewers in parallel and aggregate verdicts.
   --designer A    Override the designer adapter (with --design).
+  --opencode-model M  Model 'provider/model' for OpenCode (or LOOPE_OPENCODE_MODEL).
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).
   --quiet         Suppress the live activity feed; keep step results and summary.

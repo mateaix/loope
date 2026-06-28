@@ -67,14 +67,20 @@ loope adapters                               # list supported adapters
 | `--workdir DIR`          | Source directory to run against (default: current directory)     |
 | `--in-place`             | Edit the working directory directly instead of a copied tree     |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`)    |
-| `--preset NAME`          | `claude-codex` \| `codex-claude` \| `claude-solo` \| `dual-review` |
+| `--preset NAME`          | `claude-codex` \| `codex-claude` \| `claude-solo` \| `dual-review` \| `opencode-codex` |
 | `--implementer A`        | Override the implementer adapter (default `claude`)              |
 | `--reviewer A`           | Override the reviewer adapter (single, default `codex`)         |
 | `--reviewers A,B`        | Run several reviewers in parallel and aggregate their verdicts  |
 | `--designer A`           | Override the designer adapter (with `--design`)                 |
 | `--verify-cmd C`         | Run shell command `C` as the verifier; gate passes iff it exits 0 |
+| `--opencode-model M`     | `provider/model` for OpenCode (or `LOOPE_OPENCODE_MODEL`)        |
 | `--isolate-home`         | Give each agent a private CLI config dir (default: reuse your login) |
 | `--color WHEN`           | `auto` (default), `always`, or `never`                          |
+
+OpenCode runs via `opencode run --format json`; it needs a configured, licensed
+provider. If its default provider isn't usable for your account, point it at one with
+`--opencode-model provider/model`. A provider/auth error surfaces as a failed step (the
+loop halts with OpenCode's message) rather than a crash.
 
 ## How a run executes
 
@@ -170,7 +176,7 @@ with `--color auto|always|never`. Piped/CI output stays plain markdown.
 | ----------- | ----------------------------------- | ---------------------------- |
 | `claude`    | Implements and revises              | `claude` (`LOOPE_CLAUDE_BIN`) |
 | `codex`     | Reviews code and design consistency | `codex` (`LOOPE_CODEX_BIN`)   |
-| `opencode`  | Alternative implementation backend  | `opencode` (`LOOPE_OPENCODE_BIN`) |
+| `opencode`  | Any role via `opencode run` (needs a provider) | `opencode` (`LOOPE_OPENCODE_BIN`) |
 | `generic`   | Fallback for any custom agent       | — (`LOOPE_GENERIC_BIN`)       |
 
 ## Verifying the real-CLI path
@@ -204,6 +210,7 @@ exercise the real agents manually:
 - [CLI UX Spec](docs/specs/2026-06-28-loope-cli-ux-spec.md)
 - [Live Execution Visibility Spec](docs/specs/2026-06-28-loope-live-visibility-spec.md)
 - [Live Terminal Rendering Spec](docs/specs/2026-06-28-loope-live-rendering-spec.md)
+- [OpenCode Adapter Spec](docs/specs/2026-06-28-loope-opencode-adapter-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)

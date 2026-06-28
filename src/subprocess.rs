@@ -17,11 +17,14 @@ use crate::adapter::{AgentInvocation, InvocationResult, Invoker, resolve_program
 use crate::event::{ActionKind, LoopEvent};
 
 /// An [`Invoker`] that runs the adapter's real CLI as a subprocess.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SubprocessInvoker {
     /// When true, point each agent's CLI config/home at its private run directory.
     /// Default (false) reuses the user's normal login so authentication works.
     pub isolate_home: bool,
+    /// Optional `provider/model` passed to OpenCode as `-m` when its default provider
+    /// is not usable. Resolved by the CLI from `--opencode-model` / `LOOPE_OPENCODE_MODEL`.
+    pub opencode_model: Option<String>,
 }
 
 impl Invoker for SubprocessInvoker {
@@ -54,7 +57,13 @@ impl Invoker for SubprocessInvoker {
 
         let mut cmd = Command::new(&program);
         cmd.current_dir(&inv.workspace_dir);
-        configure_command(&mut cmd, inv, self.isolate_home, codex_output.as_deref());
+        configure_command(
+            &mut cmd,
+            inv,
+            self.isolate_home,
+            codex_output.as_deref(),
+            self.opencode_model.as_deref(),
+        );
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -66,8 +75,11 @@ impl Invoker for SubprocessInvoker {
             }
         };
 
-        // Deliver the prompt on stdin, then close it so the CLI can start working.
-        if let Some(mut stdin) = child.stdin.take() {
+        // Deliver the prompt: Claude/Codex read it on stdin; OpenCode takes it as a
+        // `run` argument (set in configure_command). Always close stdin so the CLI starts.
+        if let Some(mut stdin) = child.stdin.take()
+            && matches!(inv.adapter, Adapter::Claude | Adapter::Codex)
+        {
             let _ = stdin.write_all(inv.prompt.as_bytes());
         }
 
@@ -97,10 +109,19 @@ impl Invoker for SubprocessInvoker {
         let stderr = stderr_handle
             .map(|handle| handle.join().unwrap_or_default())
             .unwrap_or_default();
-        let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
         let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+        let exit_ok = code == 0;
 
-        let message = if success {
+        // OpenCode reports provider/auth failures as a `type:"error"` event even when it
+        // exits cleanly; treat that as a failed step carrying the error message.
+        let opencode_error = (inv.adapter == Adapter::OpenCode)
+            .then(|| extract_opencode_error(&stdout))
+            .flatten();
+        let success = exit_ok && opencode_error.is_none();
+
+        let message = if let Some(err) = opencode_error {
+            err
+        } else if success {
             adapter_message(inv.adapter, codex_output.as_deref(), &stdout).unwrap_or_else(|| {
                 let trimmed = stdout.trim();
                 if trimmed.is_empty() {
@@ -136,11 +157,38 @@ fn adapter_message(adapter: Adapter, codex_output: Option<&std::path::Path>, std
             .filter(|s| !s.is_empty())
             .or_else(|| extract_last_agent_message(stdout)),
         Adapter::Claude => extract_claude_result(stdout),
+        Adapter::OpenCode => extract_opencode_message(stdout),
         _ => {
             let trimmed = stdout.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         }
     }
+}
+
+/// Extract OpenCode's error message from a `--format json` stream, if it reported one.
+fn extract_opencode_error(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if line.contains("\"type\":\"error\"")
+            && let Some(message) = extract_json_string_field(line, "message")
+            && !message.trim().is_empty()
+        {
+            return Some(message.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Extract OpenCode's final assistant message: the last assistant `text` in the stream.
+fn extract_opencode_message(stdout: &str) -> Option<String> {
+    let mut last = None;
+    for line in stdout.lines() {
+        for event in parse_opencode_event(line) {
+            if let LoopEvent::Message { text } = event {
+                last = Some(text);
+            }
+        }
+    }
+    last
 }
 
 /// Extract Claude's final `result` text from a `stream-json` stdout.
@@ -165,6 +213,7 @@ fn configure_command(
     inv: &AgentInvocation,
     isolate_home: bool,
     codex_output: Option<&std::path::Path>,
+    opencode_model: Option<&str>,
 ) {
     match inv.adapter {
         Adapter::Claude => {
@@ -202,7 +251,17 @@ fn configure_command(
             }
         }
         Adapter::OpenCode => {
+            // Non-interactive run with a structured event stream; the prompt is the
+            // `run` message argument, and the workspace is the working directory.
             cmd.arg("run");
+            cmd.args(["--format", "json"]);
+            cmd.arg("--dir").arg(&inv.workspace_dir);
+            if let Some(model) = opencode_model {
+                cmd.args(["-m", model]);
+            }
+            // OpenCode has no read-only run flag; the role's read-only intent is carried
+            // in the prompt. The prompt is delivered as the message argument (last).
+            cmd.arg(&inv.prompt);
         }
         Adapter::Generic => {}
     }
@@ -330,7 +389,56 @@ fn parse_event(adapter: Adapter, line: &str) -> Vec<LoopEvent> {
     match adapter {
         Adapter::Claude => parse_claude_event(line),
         Adapter::Codex => parse_codex_event(line),
+        Adapter::OpenCode => parse_opencode_event(line),
         _ => Vec::new(),
+    }
+}
+
+/// Parse one OpenCode `--format json` line into normalized events.
+///
+/// OpenCode emits JSONL events keyed by `type`. Assistant `text` parts become messages,
+/// tool/file parts become actions; `error` events yield nothing here (the failure is
+/// surfaced from the invocation result). Field handling is intentionally lenient.
+fn parse_opencode_event(line: &str) -> Vec<LoopEvent> {
+    let mut events = Vec::new();
+    if line.contains("\"type\":\"error\"") {
+        return events;
+    }
+    // A tool/file part: prefer an explicit tool name, then a path/file target.
+    if (line.contains("\"tool\"") || line.contains("\"type\":\"tool\""))
+        && let Some(tool) = extract_json_string_field(line, "tool")
+    {
+        let target = extract_json_string_field(line, "path")
+            .or_else(|| extract_json_string_field(line, "file"))
+            .or_else(|| extract_json_string_field(line, "filePath"))
+            .or_else(|| extract_json_string_field(line, "command"))
+            .unwrap_or_else(|| tool.clone());
+        events.push(LoopEvent::Action {
+            kind: map_opencode_tool(&tool),
+            target: shorten_target(&target),
+        });
+    }
+    // An assistant text part.
+    if line.contains("\"type\":\"text\"")
+        && let Some(text) = extract_json_string_field(line, "text")
+        && !text.trim().is_empty()
+    {
+        events.push(LoopEvent::Message {
+            text: shorten_message(text.trim()),
+        });
+    }
+    events
+}
+
+/// Map an OpenCode tool name to an action kind.
+fn map_opencode_tool(name: &str) -> ActionKind {
+    match name.to_ascii_lowercase().as_str() {
+        "write" => ActionKind::Write,
+        "edit" | "patch" | "multiedit" => ActionKind::Edit,
+        "read" | "view" | "cat" => ActionKind::Read,
+        "bash" | "shell" | "run" | "exec" => ActionKind::Command,
+        "grep" | "glob" | "search" | "list" | "ls" => ActionKind::Search,
+        _ => ActionKind::Other,
     }
 }
 
@@ -425,6 +533,35 @@ mod tests {
                 input_tokens: 12,
                 output_tokens: 3
             }]
+        );
+    }
+
+    #[test]
+    fn parses_opencode_text_and_tool() {
+        let text = "{\"type\":\"text\",\"text\":\"Implemented slugify.\"}";
+        assert_eq!(
+            parse_opencode_event(text),
+            vec![LoopEvent::Message {
+                text: "Implemented slugify.".to_string()
+            }]
+        );
+        let tool = "{\"type\":\"tool\",\"tool\":\"edit\",\"path\":\"src/lib.rs\"}";
+        assert_eq!(
+            parse_opencode_event(tool),
+            vec![LoopEvent::Action {
+                kind: ActionKind::Edit,
+                target: "src/lib.rs".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn opencode_error_line_yields_no_event_but_extracts_message() {
+        let err = "{\"type\":\"error\",\"sessionID\":\"x\",\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"Forbidden: unauthorized: not licensed to use Copilot\",\"statusCode\":403}}}";
+        assert!(parse_opencode_event(err).is_empty());
+        assert_eq!(
+            extract_opencode_error(err).as_deref(),
+            Some("Forbidden: unauthorized: not licensed to use Copilot")
         );
     }
 
