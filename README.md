@@ -6,7 +6,8 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2024-orange.svg?logo=rust)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-MVP-yellow.svg)](docs/specs/2026-06-28-loope-mvp-spec.md)
+[![Status](https://img.shields.io/badge/status-v1.0%20%C2%B7%20iterative%20loop-brightgreen.svg)](docs/specs/2026-06-28-loope-iterative-loop-spec.md)
+[![Std only](https://img.shields.io/badge/deps-std%20only-blue.svg)](Cargo.toml)
 
 </div>
 
@@ -17,29 +18,30 @@ Loope is a Rust CLI prototype for a new development pattern: **don't ask one age
 ## How it works
 
 **The loop actually loops.** A run is an optional design step, then iterations of
-implement → review → verify, repeated with feedback until it converges (verification
+implement → review → verify, repeated with feedback until it **converges** (verification
 passes and no reviewer blocks) or hits `--max-iters` (default 3).
 
 **Default loop**
 
 ```text
 requirement
-  -> Claude implements
-  -> Codex reviews          ┐
-  -> verifier checks        │ repeat (fix → review → verify) with feedback
-  -> not converged? Claude fixes the blockers and failures …
-  -> converged ✓
+   │
+   ▼
+ ┌───────────────────────────────────────────────┐
+ │  Claude implements / fixes                     │
+ │  Codex reviews        →  verifier checks        │ ← one iteration
+ └───────────────────────────────────────────────┘
+   │
+   ├─ converged (tests pass, no blockers)? ── yes ─▶ done ✓
+   └─ no ─▶ feed blockers + failures back, iterate again  (≤ --max-iters)
 ```
 
-**Design-aware loop**
+**Design-aware loop** (`--design`) adds a one-time contract the whole loop is judged
+against:
 
 ```text
-requirement
-  -> Design Contract (once)
-  -> Claude implements against the contract
-  -> Codex reviews code + design consistency (blocks on unmet acceptance criteria)
-  -> verifier checks against the contract
-  -> repeat with feedback until converged ✓
+requirement ─▶ Design Contract (once) ─▶ [ implement → review → verify ] ↻ ─▶ converged ✓
+                                          reviewers BLOCK on unmet acceptance criteria
 ```
 
 ## Documentation
@@ -167,24 +169,26 @@ The review phase is structured and can fan out across agents:
 ## Terminal UI
 
 On a TTY, `loope run` renders a small visual identity built from Loope's own motifs —
-the `∞` loop glyph and a `design → implement → review → verify` pipeline, tinted by the
-logo's palette (Claude blue, Codex orange).
+the `∞` loop glyph and an `implement → review → verify ↻` pipeline (the `↻` marks that it
+repeats to convergence), tinted by the logo's palette (Claude blue, Codex orange).
 
-While a step runs, Loope streams the agent's actions as a **live activity feed** —
-parsed from each CLI's event stream — under an animated status line that shows a
-spinner, the elapsed time, the last action, and overall progress, updating ~10×/s even
-while the agent is quiet:
+Each iteration is announced with an `∞ iteration k/N` header. While a step runs, Loope
+streams the agent's actions as a **live activity feed** — parsed from each CLI's event
+stream — under an animated status line that shows a spinner, the elapsed time, the last
+action, and overall progress, updating ~10×/s even while the agent is quiet:
 
 ```text
+  ∞ iteration 1/3
   ▸ 1 implementer · Claude
       ✎ edit   src/lib.rs
       ▸ run    cargo build
       › Added multiply(a, b) with a test.
-  ⠹ implementer · Claude   0:42   ▸ run cargo build        [1/4]   ← live, animated
+  ⠹ implementer · Claude   0:42   ▸ run cargo build        [1/9]   ← live, animated
   ✓ 1 implementer · Claude   0:51   src/lib.rs +12 −0              ← committed on finish
 ```
 
-The final summary and `show` carry each step's duration and the run's total time.
+The final summary groups steps by iteration and states the stop reason; it and `show`
+carry each step's duration and the run's total time.
 `--no-progress` keeps the committed lines but drops the animation; colors downgrade to
 256-color when the terminal lacks truecolor.
 
@@ -203,7 +207,7 @@ with `--color auto|always|never`. Piped/CI output stays plain markdown.
 
 | Adapter     | Role                                | Binary (override env)        |
 | ----------- | ----------------------------------- | ---------------------------- |
-| `claude`    | Implements and revises              | `claude` (`LOOPE_CLAUDE_BIN`) |
+| `claude`    | Implements and fixes across iterations | `claude` (`LOOPE_CLAUDE_BIN`) |
 | `codex`     | Reviews code and design consistency | `codex` (`LOOPE_CODEX_BIN`)   |
 | `opencode`  | Any role via `opencode run` (needs a provider) | `opencode` (`LOOPE_OPENCODE_BIN`) |
 | `generic`   | Fallback for any custom agent       | — (`LOOPE_GENERIC_BIN`)       |
@@ -224,12 +228,38 @@ exercise the real agents manually:
    loope run --verify-cmd "cargo test" "Add an add(a, b) function with a test"
    ```
 
-   Claude implements and revises, Codex reviews, and `cargo test` runs in the copied
-   workspace (the verify gate passes only if it exits 0). Use `--reviewer claude` for
-   a Claude-only loop when Codex is unavailable, and `--approve manual` to confirm
-   before any agent launches.
+   Claude implements, Codex reviews, and `cargo test` runs in the copied workspace; if
+   the tests fail or Codex blocks, Claude gets that feedback and the loop iterates again
+   (up to `--max-iters`). Use `--reviewer claude` for a Claude-only loop when Codex is
+   unavailable (e.g. quota), and `--approve manual` to confirm before any agent launches.
 3. Inspect `.loope/runs/<run-id>/` — each agent's `prompt.md`, `transcript.jsonl`, and
    `result.md`, plus the final `report.md`.
+
+## Architecture
+
+The source is grouped by role into four domains, each layer depending only on the ones
+below it:
+
+```text
+src/
+  model.rs     the loop vocabulary: roles, adapters, the plan and its prompts (pure data)
+  adapter.rs   how an agent is invoked + what it emits
+    adapter/{event, stub, subprocess}.rs
+  engine.rs    running the loop to convergence
+    engine/{executor, workspace, review}.rs
+  cli.rs       binary-only terminal presentation
+    cli/{ui, theme}.rs
+```
+
+- **model** — pure vocabulary; no I/O. Everything depends on it.
+- **adapter** — the `Invoker` trait and its `stub` (hermetic) and `subprocess` (real CLI)
+  implementations, plus the normalized `event` stream they produce.
+- **engine** — the `executor` (iterations + convergence), the run `workspace` (copy,
+  snapshots, diffs), and `review` verdict parsing.
+- **cli** — the `loope` binary's rendering; not part of the library API.
+
+See the [Source Layout Spec](docs/specs/2026-06-29-loope-source-layout-spec.md) for the
+rationale.
 
 ## SDD artifacts
 
