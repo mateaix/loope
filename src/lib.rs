@@ -1,3 +1,9 @@
+pub mod adapter;
+pub mod executor;
+pub mod stub;
+pub mod subprocess;
+pub mod workspace;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Adapter {
     Claude,
@@ -202,7 +208,7 @@ pub fn generate_plan(requirement: &str, options: LoopOptions) -> LoopPlan {
     }
 }
 
-fn prompt_for_step(step: &LoopStep, requirement: &str) -> String {
+pub(crate) fn prompt_for_step(step: &LoopStep, requirement: &str) -> String {
     match step.role {
         Role::Designer => format!(
             "You are the design agent. Create a Design Contract for this requirement:\n\n{}\n\nInclude user flows, UI states, component boundaries, API/data contracts, and acceptance criteria.",

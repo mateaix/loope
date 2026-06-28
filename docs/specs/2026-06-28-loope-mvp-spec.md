@@ -33,7 +33,7 @@ In scope:
 - Markdown output suitable for humans and agent prompts.
 - Local run directory `.loope/` for future loop artifacts.
 
-Out of scope:
+Out of scope (for v0.1; real agent execution is specified in the [Agent Integration Spec](2026-06-28-loope-agent-integration-spec.md)):
 
 - Actually invoking Claude/Codex/OpenCode subprocesses.
 - Parsing real tool streaming output.
@@ -116,10 +116,3 @@ loope adapters
 - `cargo run -- plan --design "Add dashboard"` includes a design contract step before implementation.
 - `cargo run -- adapters` lists `claude`, `codex`, `opencode`, and `generic`.
 - The project contains docs, tests, and a README sufficient for migration into a standalone repository.
-
-## Related Knowledge
-
-- [[output/GitHub项目解读/2026-06-08-LiteLLM-Agent-Platform项目解读.md]]
-- [[output/GitHub项目解读/2026-06-17-Omnigent项目分析.md]]
-- [[output/GitHub项目解读/2026-06-24-OpenKnowledge项目分析.md]]
-- [[output/开源项目方向/2026-06-24-开源方向重评估-候选排序.md]]
