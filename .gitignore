@@ -2,3 +2,4 @@
 /.loope/
 *.log
 .DS_Store
+/.claude/
