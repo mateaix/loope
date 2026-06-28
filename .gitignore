@@ -1,3 +1,4 @@
 /target/
 /.loope/
 *.log
+.DS_Store
