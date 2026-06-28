@@ -134,6 +134,20 @@ halts the loop and the report says exactly which gate failed and why.
   waits for explicit confirmation before launching it.
 - Reviewer and verifier run read-only when the adapter is not `write_capable`.
 - Loope never grants an agent write access outside the run workspace.
+- By default the agent CLIs reuse the user's normal login so they authenticate;
+  `--isolate-home` opts into a fresh private config dir per agent.
+
+### Adapter overrides and the command verifier
+
+- The loop adapters are overridable per run (`--implementer`, `--reviewer`,
+  `--designer`), so the loop can run with whatever CLIs are installed — e.g. a
+  Claude-only loop when `codex` is absent.
+- The verifier may run a **real check command** instead of an agent
+  (`--verify-cmd "<cmd>"`): the command runs in the workspace and the gate passes
+  only if it exits zero. This makes verification concrete and avoids depending on an
+  agent for the verify step.
+- Because a CLI cannot reliably self-report which files it changed, Loope detects a
+  write-capable step's changes by diffing the workspace before and after the step.
 
 ## Execution Flow
 
@@ -161,7 +175,8 @@ loope run "Add login"                       # execute the default loop
 loope run --design "Build dashboard"        # execute the design-aware loop
 loope run --dry-run "Add login"             # deterministic stub run, no binaries
 loope run --workdir ./app --in-place "..."  # edit a specific tree in place
-loope run --approve manual "..."            # confirm before each agent
+loope run --approve manual "..."            # confirm before launching agents
+loope run --reviewer claude --verify-cmd "cargo test" "..."  # Claude-only loop, real verify
 loope runs                                  # list past runs
 loope show run-0001                         # print a past run's report
 ```

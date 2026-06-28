@@ -150,6 +150,15 @@ mod tests {
     }
 
     #[test]
+    fn adapter_parses_case_insensitively() {
+        assert_eq!(Adapter::parse("claude"), Some(Adapter::Claude));
+        assert_eq!(Adapter::parse("  Codex "), Some(Adapter::Codex));
+        assert_eq!(Adapter::parse("OPENCODE"), Some(Adapter::OpenCode));
+        assert_eq!(Adapter::parse("generic"), Some(Adapter::Generic));
+        assert_eq!(Adapter::parse("gpt"), None);
+    }
+
+    #[test]
     fn generic_adapter_has_no_program() {
         let spec = spec_for(Adapter::Generic);
         assert!(!spec.has_real_cli);

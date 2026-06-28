@@ -16,7 +16,11 @@ use crate::adapter::{AgentInvocation, InvocationResult, Invoker, resolve_program
 
 /// An [`Invoker`] that runs the adapter's real CLI as a subprocess.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SubprocessInvoker;
+pub struct SubprocessInvoker {
+    /// When true, point each agent's CLI config/home at its private run directory.
+    /// Default (false) reuses the user's normal login so authentication works.
+    pub isolate_home: bool,
+}
 
 impl Invoker for SubprocessInvoker {
     fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
@@ -31,7 +35,7 @@ impl Invoker for SubprocessInvoker {
 
         let mut cmd = Command::new(&program);
         cmd.current_dir(&inv.workspace_dir);
-        configure_command(&mut cmd, inv);
+        configure_command(&mut cmd, inv, self.isolate_home);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -86,24 +90,33 @@ impl Invoker for SubprocessInvoker {
     }
 }
 
-/// Apply per-adapter headless flags and the private home environment variable.
-/// The prompt is delivered on stdin for every adapter.
-fn configure_command(cmd: &mut Command, inv: &AgentInvocation) {
+/// Apply per-adapter headless flags. The prompt is delivered on stdin for every
+/// adapter. When `isolate_home` is set, the agent's CLI config/home is redirected to
+/// its private run directory; otherwise the user's normal login is reused so the CLI
+/// authenticates.
+fn configure_command(cmd: &mut Command, inv: &AgentInvocation, isolate_home: bool) {
     match inv.adapter {
         Adapter::Claude => {
-            // Print (headless) mode; isolate session state to the private home dir.
+            // Print (headless) mode.
             cmd.arg("-p");
-            cmd.env("CLAUDE_CONFIG_DIR", &inv.home_dir);
+            // Read-only steps plan only; write-capable steps may edit the workspace.
             if inv.read_only {
                 cmd.args(["--permission-mode", "plan"]);
+            } else {
+                cmd.args(["--permission-mode", "acceptEdits"]);
+            }
+            if isolate_home {
+                cmd.env("CLAUDE_CONFIG_DIR", &inv.home_dir);
             }
         }
         Adapter::Codex => {
-            // Non-interactive exec mode; isolate config/session to the private home.
+            // Non-interactive exec mode.
             cmd.arg("exec");
-            cmd.env("CODEX_HOME", &inv.home_dir);
             if inv.read_only {
                 cmd.args(["--sandbox", "read-only"]);
+            }
+            if isolate_home {
+                cmd.env("CODEX_HOME", &inv.home_dir);
             }
         }
         Adapter::OpenCode => {

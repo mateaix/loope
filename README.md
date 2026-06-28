@@ -60,13 +60,18 @@ loope adapters                               # list supported adapters
 
 ### `run` flags
 
-| Flag                  | Meaning                                                           |
-| --------------------- | ---------------------------------------------------------------- |
-| `--dry-run`           | Execute with deterministic stub agents (no external CLIs/network) |
-| `--design`            | Insert a design-contract step before implementation              |
-| `--workdir DIR`       | Source directory to run against (default: current directory)     |
-| `--in-place`          | Edit the working directory directly instead of a copied tree     |
-| `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`) |
+| Flag                     | Meaning                                                           |
+| ------------------------ | ---------------------------------------------------------------- |
+| `--dry-run`              | Execute with deterministic stub agents (no external CLIs/network) |
+| `--design`               | Insert a design-contract step before implementation              |
+| `--workdir DIR`          | Source directory to run against (default: current directory)     |
+| `--in-place`             | Edit the working directory directly instead of a copied tree     |
+| `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`)    |
+| `--implementer A`        | Override the implementer adapter (default `claude`)              |
+| `--reviewer A`           | Override the reviewer adapter (default `codex`)                  |
+| `--designer A`           | Override the designer adapter (with `--design`)                 |
+| `--verify-cmd C`         | Run shell command `C` as the verifier; gate passes iff it exits 0 |
+| `--isolate-home`         | Give each agent a private CLI config dir (default: reuse your login) |
 
 ## How a run executes
 
@@ -111,9 +116,21 @@ loope adapters                               # list supported adapters
 Automated tests cover the loop through `--dry-run` (no binaries or network). To
 exercise the real agents manually:
 
-1. Install the `claude` and `codex` CLIs and authenticate them (or point
-   `LOOPE_CLAUDE_BIN` / `LOOPE_CODEX_BIN` at compatible binaries).
-2. From a project directory, run `loope run --approve manual "<requirement>"`.
+1. Install and authenticate the agent CLIs you want to use (or point
+   `LOOPE_CLAUDE_BIN` / `LOOPE_CODEX_BIN` at compatible binaries). By default Loope
+   reuses your normal CLI login; pass `--isolate-home` to give each agent a fresh
+   config dir instead.
+2. Run with a real verifier and confirmation, e.g. a Claude-only loop:
+
+   ```bash
+   loope run --approve manual \
+     --reviewer claude \
+     --verify-cmd "cargo test" \
+     "Add a greeting function"
+   ```
+
+   The implementer and reviewer use `claude`, and the verifier runs `cargo test` in
+   the copied workspace (the gate passes only if it exits 0).
 3. Confirm the prompt, then inspect `.loope/runs/<run-id>/` — each agent's `prompt.md`,
    `transcript.jsonl`, and `result.md`, plus the final `report.md`.
 

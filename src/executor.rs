@@ -2,10 +2,20 @@
 //! passes artifacts forward, evaluates gates, and persists a run.
 
 use std::io;
+use std::path::Path;
+use std::process::Command;
 
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
-use crate::workspace::{RunWorkspace, atomic_write};
+use crate::workspace::{RunWorkspace, atomic_write, changed_files, snapshot};
 use crate::{Adapter, LoopPlan, Role, prompt_for_step};
+
+/// Options controlling how a loop executes.
+#[derive(Clone, Debug, Default)]
+pub struct ExecuteOptions {
+    /// When set, the verifier step runs this shell command in the workspace instead
+    /// of invoking an agent; its gate passes iff the command exits zero.
+    pub verify_command: Option<String>,
+}
 
 /// Outcome of one executed step.
 #[derive(Clone, Debug)]
@@ -111,6 +121,7 @@ pub fn execute_plan(
     plan: &LoopPlan,
     workspace: &RunWorkspace,
     invoker: &dyn Invoker,
+    options: &ExecuteOptions,
 ) -> io::Result<LoopRun> {
     atomic_write(&workspace.root.join("plan.md"), &plan.to_markdown())?;
 
@@ -136,20 +147,43 @@ pub fn execute_plan(
         let home = workspace.agent_home(step.role, step.adapter)?;
         atomic_write(&agent_dir.join("prompt.md"), &prompt)?;
 
-        let invocation = AgentInvocation {
-            adapter: step.adapter,
-            role: step.role,
-            prompt: prompt.clone(),
-            workspace_dir: workspace.workspace_dir.clone(),
-            home_dir: home,
-            read_only: read_only_for(step.role),
+        let read_only = read_only_for(step.role);
+        let result = if step.role == Role::Verifier && options.verify_command.is_some() {
+            // A real check command stands in for the verifier agent.
+            run_verify_command(
+                options.verify_command.as_deref().unwrap(),
+                &workspace.workspace_dir,
+            )
+        } else {
+            let invocation = AgentInvocation {
+                adapter: step.adapter,
+                role: step.role,
+                prompt: prompt.clone(),
+                workspace_dir: workspace.workspace_dir.clone(),
+                home_dir: home,
+                read_only,
+            };
+            // For write-capable steps, detect file changes by diffing the workspace,
+            // since the CLI cannot reliably self-report what it changed.
+            let before = (!read_only).then(|| snapshot(&workspace.workspace_dir));
+            let mut result = invoker.invoke(&invocation);
+            if let Some(before) = before
+                && result.changed_files.is_empty()
+            {
+                let after = snapshot(&workspace.workspace_dir);
+                result.changed_files = changed_files(&before, &after);
+            }
+            result
         };
-        let result = invoker.invoke(&invocation);
 
         atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
         atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
 
-        let (gate_passed, gate_notes) = evaluate_gate(step.role, &result);
+        // A second implementer turn that follows a review is a revision: if the
+        // review raised no blockers there may be nothing to change, so it is not
+        // required to touch files.
+        let is_revision = step.role == Role::Implementer && last_review_message.is_some();
+        let (gate_passed, gate_notes) = evaluate_gate(step.role, &result, is_revision);
 
         // Record artifacts for downstream steps before moving `result`.
         match step.role {
@@ -198,6 +232,38 @@ fn read_only_for(role: Role) -> bool {
     matches!(role, Role::Reviewer | Role::Verifier)
 }
 
+/// Run a real shell check command in the workspace as the verifier step.
+fn run_verify_command(command: &str, workspace_dir: &Path) -> InvocationResult {
+    match Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(workspace_dir)
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let success = output.status.success();
+            let message = format!(
+                "`{command}` exited {} ({})",
+                output.status.code().unwrap_or(-1),
+                if success { "ok" } else { "failure" }
+            );
+            InvocationResult {
+                success,
+                message,
+                changed_files: Vec::new(),
+                transcript: format!(
+                    "$ {command}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n"
+                ),
+            }
+        }
+        Err(err) => {
+            InvocationResult::failure(format!("failed to run verify command '{command}': {err}"))
+        }
+    }
+}
+
 /// Build a step's prompt from its base prompt plus the relevant upstream artifacts.
 fn build_prompt(
     role: Role,
@@ -243,8 +309,9 @@ fn build_prompt(
     prompt
 }
 
-/// Evaluate a step's gate against its real result.
-fn evaluate_gate(role: Role, result: &InvocationResult) -> (bool, String) {
+/// Evaluate a step's gate against its real result. `is_revision` marks an
+/// implementer turn that follows a review (where making no change can be correct).
+fn evaluate_gate(role: Role, result: &InvocationResult, is_revision: bool) -> (bool, String) {
     if !result.success {
         return (false, "invocation failed".to_string());
     }
@@ -254,7 +321,11 @@ fn evaluate_gate(role: Role, result: &InvocationResult) -> (bool, String) {
     match role {
         Role::Implementer => {
             if result.changed_files.is_empty() {
-                (false, "implementer reported no change".to_string())
+                if is_revision {
+                    (true, "no revision needed".to_string())
+                } else {
+                    (false, "implementer reported no change".to_string())
+                }
             } else {
                 (true, "scoped change produced".to_string())
             }
@@ -333,7 +404,7 @@ mod tests {
         let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
         let plan = generate_plan("Add login", LoopOptions::default());
 
-        let run = execute_plan(&plan, &ws, &StubInvoker).unwrap();
+        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default()).unwrap();
 
         assert!(run.all_passed());
         assert!(!run.halted);
@@ -360,7 +431,7 @@ mod tests {
         let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
         let plan = generate_plan("Add login", LoopOptions::default());
 
-        execute_plan(&plan, &ws, &StubInvoker).unwrap();
+        execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default()).unwrap();
 
         let reviewer_prompt =
             fs::read_to_string(ws.agent_dir(Role::Reviewer, Adapter::Codex).join("prompt.md"))
@@ -388,6 +459,98 @@ mod tests {
     }
 
     #[test]
+    fn command_verifier_passes_when_command_succeeds() {
+        let base = temp_base("verify-ok");
+        let source = temp_base("verify-ok-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let options = ExecuteOptions {
+            verify_command: Some("exit 0".to_string()),
+        };
+        let run = execute_plan(&plan, &ws, &StubInvoker, &options).unwrap();
+
+        assert!(run.all_passed());
+        let verifier = run.outcomes.last().unwrap();
+        assert_eq!(verifier.role, Role::Verifier);
+        assert!(verifier.gate_passed);
+        assert!(verifier.result.message.contains("exited 0"));
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    #[test]
+    fn command_verifier_blocks_when_command_fails() {
+        let base = temp_base("verify-fail");
+        let source = temp_base("verify-fail-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let options = ExecuteOptions {
+            verify_command: Some("exit 1".to_string()),
+        };
+        let run = execute_plan(&plan, &ws, &StubInvoker, &options).unwrap();
+
+        assert!(!run.all_passed());
+        assert!(run.halted);
+        let verifier = run.outcomes.last().unwrap();
+        assert_eq!(verifier.role, Role::Verifier);
+        assert!(!verifier.gate_passed);
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    /// Implementer changes a file on the first turn but makes no change on the
+    /// revise turn (nothing to fix). The reviewer/verifier defer to the stub.
+    struct NoRevisionInvoker {
+        implementer_calls: RefCell<usize>,
+    }
+
+    impl Invoker for NoRevisionInvoker {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            if inv.role == Role::Implementer {
+                let mut calls = self.implementer_calls.borrow_mut();
+                *calls += 1;
+                if *calls == 1 {
+                    return StubInvoker.invoke(inv); // first turn writes a file
+                }
+                // revise turn: nothing to change
+                return InvocationResult {
+                    success: true,
+                    message: "No changes needed; the review raised no blockers.".to_string(),
+                    changed_files: Vec::new(),
+                    transcript: String::new(),
+                };
+            }
+            StubInvoker.invoke(inv)
+        }
+    }
+
+    #[test]
+    fn revise_turn_passes_when_no_change_is_needed() {
+        let base = temp_base("norev");
+        let source = temp_base("norev-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let invoker = NoRevisionInvoker {
+            implementer_calls: RefCell::new(0),
+        };
+        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default()).unwrap();
+
+        assert!(run.all_passed(), "revise turn with no change should not block");
+        let revise = &run.outcomes[2];
+        assert_eq!(revise.role, Role::Implementer);
+        assert!(revise.gate_passed);
+        assert_eq!(revise.gate_notes, "no revision needed");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    #[test]
     fn blocking_gate_halts_the_loop() {
         let base = temp_base("halt");
         let source = temp_base("halt-src");
@@ -397,7 +560,7 @@ mod tests {
         let invoker = FailReviewerInvoker {
             seen: RefCell::new(Vec::new()),
         };
-        let run = execute_plan(&plan, &ws, &invoker).unwrap();
+        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default()).unwrap();
 
         assert!(run.halted);
         assert!(!run.all_passed());

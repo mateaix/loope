@@ -30,6 +30,17 @@ impl Adapter {
             Adapter::Generic => "Generic",
         }
     }
+
+    /// Parse an adapter from its lowercase id (case-insensitive).
+    pub fn parse(s: &str) -> Option<Adapter> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "claude" => Some(Adapter::Claude),
+            "codex" => Some(Adapter::Codex),
+            "opencode" => Some(Adapter::OpenCode),
+            "generic" => Some(Adapter::Generic),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
