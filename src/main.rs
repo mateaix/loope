@@ -71,6 +71,7 @@ fn cmd_design(args: &mut Vec<String>) {
     let opencode_model = remove_value(args, "--opencode-model")
         .or_else(|| std::env::var("LOOPE_OPENCODE_MODEL").ok())
         .filter(|m| !m.trim().is_empty());
+    let timeout = resolve_timeout(remove_value(args, "--timeout"));
     let workdir = remove_value(args, "--workdir");
     let designer = remove_adapter(args, "--designer").unwrap_or(Adapter::Claude);
     let requirement = args.join(" ");
@@ -108,6 +109,7 @@ fn cmd_design(args: &mut Vec<String>) {
         Box::new(SubprocessInvoker {
             isolate_home,
             opencode_model,
+            timeout,
         })
     };
 
@@ -169,6 +171,7 @@ fn cmd_run(args: &mut Vec<String>) {
     let opencode_model = remove_value(args, "--opencode-model")
         .or_else(|| std::env::var("LOOPE_OPENCODE_MODEL").ok())
         .filter(|m| !m.trim().is_empty());
+    let timeout = resolve_timeout(remove_value(args, "--timeout"));
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
@@ -237,6 +240,7 @@ fn cmd_run(args: &mut Vec<String>) {
         Box::new(SubprocessInvoker {
             isolate_home,
             opencode_model: opencode_model.clone(),
+            timeout,
         })
     };
     let options = ExecuteOptions { verify_command };
@@ -406,6 +410,18 @@ fn list_run_ids(base: &Path) -> io::Result<Vec<String>> {
     Ok(ids)
 }
 
+/// Resolve the per-step timeout from `--timeout` (seconds) over `LOOPE_TIMEOUT` over a
+/// 600s default. `0` disables the bound.
+fn resolve_timeout(flag: Option<String>) -> Option<std::time::Duration> {
+    timeout_from(flag.or_else(|| std::env::var("LOOPE_TIMEOUT").ok()))
+}
+
+/// Pure timeout parse: a seconds string (or none) into a duration; `0` disables.
+fn timeout_from(raw: Option<String>) -> Option<std::time::Duration> {
+    let secs: u64 = raw.and_then(|s| s.trim().parse().ok()).unwrap_or(600);
+    (secs != 0).then(|| std::time::Duration::from_secs(secs))
+}
+
 /// Resolve and store the process-wide color level from the `color` decision.
 fn apply_color_level(color: bool) {
     let level = if color {
@@ -551,6 +567,7 @@ run flags:
   --reviewers A,B Run several reviewers in parallel and aggregate verdicts.
   --designer A    Override the designer adapter (with --design).
   --opencode-model M  Model 'provider/model' for OpenCode (or LOOPE_OPENCODE_MODEL).
+  --timeout SECS  Per-step timeout (default 600; 0 disables; or LOOPE_TIMEOUT).
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).
   --quiet         Suppress the live activity feed; keep step results and summary.
@@ -562,4 +579,19 @@ show flags:
 
 Runs are written to .loope/runs/<run-id>/."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn timeout_parsing() {
+        assert_eq!(timeout_from(None), Some(Duration::from_secs(600)));
+        assert_eq!(timeout_from(Some("120".into())), Some(Duration::from_secs(120)));
+        assert_eq!(timeout_from(Some(" 30 ".into())), Some(Duration::from_secs(30)));
+        assert_eq!(timeout_from(Some("0".into())), None); // disabled
+        assert_eq!(timeout_from(Some("nonsense".into())), Some(Duration::from_secs(600)));
+    }
 }

@@ -42,7 +42,7 @@ fn run_dry_run_executes_loop_and_writes_run_directory() {
     assert!(run.join("run.json").exists());
     assert!(
         run.join("agents")
-            .join("implementer-claude")
+            .join("01-implementer-claude")
             .join("result.md")
             .exists()
     );
@@ -77,7 +77,7 @@ fn design_dry_run_includes_designer_step() {
     let run = cwd.join(".loope").join("runs").join("run-0001");
     assert!(
         run.join("agents")
-            .join("designer-claude")
+            .join("01-designer-claude")
             .join("result.md")
             .exists()
     );
@@ -196,8 +196,8 @@ fn multiple_reviewers_each_get_a_step() {
         .join("runs")
         .join("run-0001")
         .join("agents");
-    assert!(agents.join("reviewer-codex").join("result.md").exists());
-    assert!(agents.join("reviewer-claude").join("result.md").exists());
+    assert!(agents.join("02-reviewer-codex").join("result.md").exists());
+    assert!(agents.join("03-reviewer-claude").join("result.md").exists());
 
     let _ = fs::remove_dir_all(&cwd);
 }
@@ -239,7 +239,7 @@ fn run_writes_events_and_show_diff_prints_changes() {
         .join("runs")
         .join("run-0001")
         .join("agents")
-        .join("implementer-claude")
+        .join("01-implementer-claude")
         .join("events.jsonl");
     let events_text = fs::read_to_string(&events).expect("events.jsonl");
     assert!(events_text.contains("\"type\":\"action\""));
@@ -262,6 +262,31 @@ fn run_writes_events_and_show_diff_prints_changes() {
     let diff_out = String::from_utf8(diff.stdout).unwrap();
     assert!(diff_out.contains("# Changes"));
     assert!(diff_out.contains("+# Implementation notes"));
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn implement_and_revise_turns_keep_separate_artifacts() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("turns");
+
+    let output = Command::new(exe)
+        .args(["run", "--dry-run", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+    assert!(output.status.success());
+
+    // default loop: implementer at step 1 and the revise turn at step 3 — each has its
+    // own numbered directory, so neither overwrites the other.
+    let agents = cwd
+        .join(".loope")
+        .join("runs")
+        .join("run-0001")
+        .join("agents");
+    assert!(agents.join("01-implementer-claude").join("result.md").exists());
+    assert!(agents.join("03-implementer-claude").join("result.md").exists());
 
     let _ = fs::remove_dir_all(&cwd);
 }

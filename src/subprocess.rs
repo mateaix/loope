@@ -10,7 +10,9 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::Adapter;
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker, resolve_program, spec_for};
@@ -25,6 +27,9 @@ pub struct SubprocessInvoker {
     /// Optional `provider/model` passed to OpenCode as `-m` when its default provider
     /// is not usable. Resolved by the CLI from `--opencode-model` / `LOOPE_OPENCODE_MODEL`.
     pub opencode_model: Option<String>,
+    /// Per-step wall-clock bound. `None` disables it. On timeout the child is killed
+    /// and the step fails with a "timed out" message.
+    pub timeout: Option<Duration>,
 }
 
 impl Invoker for SubprocessInvoker {
@@ -92,24 +97,78 @@ impl Invoker for SubprocessInvoker {
             })
         });
 
-        // Read stdout line by line, parsing each into events as it arrives.
-        let mut stdout = String::new();
-        if let Some(out) = child.stdout.take() {
-            for line in BufReader::new(out).lines() {
-                let Ok(line) = line else { break };
-                for event in parse_event(inv.adapter, &line) {
-                    sink(event);
+        // Read stdout on a thread (sending lines back) so the main thread can enforce a
+        // deadline: a hung agent that never writes or exits would otherwise block forever.
+        let (tx, rx) = mpsc::channel::<String>();
+        let stdout_handle = child.stdout.take().map(|out| {
+            thread::spawn(move || {
+                for line in BufReader::new(out).lines() {
+                    let Ok(line) = line else { break };
+                    if tx.send(line).is_err() {
+                        break;
+                    }
                 }
-                stdout.push_str(&line);
-                stdout.push('\n');
+            })
+        });
+
+        let started = Instant::now();
+        let mut stdout = String::new();
+        let mut timed_out = false;
+        loop {
+            let remaining = match self.timeout {
+                Some(limit) => match limit.checked_sub(started.elapsed()) {
+                    Some(left) if !left.is_zero() => left,
+                    _ => {
+                        timed_out = true;
+                        let _ = child.kill();
+                        break;
+                    }
+                },
+                None => Duration::from_secs(3600),
+            };
+            match rx.recv_timeout(remaining) {
+                Ok(line) => {
+                    for event in parse_event(inv.adapter, &line) {
+                        sink(event);
+                    }
+                    stdout.push_str(&line);
+                    stdout.push('\n');
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.timeout.is_some() {
+                        timed_out = true;
+                        let _ = child.kill();
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
         let status = child.wait();
+        let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+
+        if timed_out {
+            // Do not join the reader/stderr threads: a grandchild the agent spawned may
+            // still hold those pipes open, which would block. Detach them (they end when
+            // the pipes close or at process exit) so the loop itself never hangs.
+            drop(stdout_handle);
+            drop(stderr_handle);
+            let secs = self.timeout.map(|d| d.as_secs()).unwrap_or(0);
+            return InvocationResult {
+                success: false,
+                message: format!("timed out after {secs}s"),
+                changed_files: Vec::new(),
+                transcript: format!("--- stdout ---\n{stdout}\n--- (timed out; streams detached) ---\n"),
+            };
+        }
+
+        if let Some(handle) = stdout_handle {
+            let _ = handle.join();
+        }
         let stderr = stderr_handle
             .map(|handle| handle.join().unwrap_or_default())
             .unwrap_or_default();
-        let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
         let exit_ok = code == 0;
 
         // OpenCode reports provider/auth failures as a `type:"error"` event even when it

@@ -65,18 +65,21 @@ impl RunWorkspace {
         })
     }
 
-    /// Directory holding one agent's files: `<run>/agents/<role>-<adapter>/`.
-    pub fn agent_dir(&self, role: Role, adapter: Adapter) -> PathBuf {
+    /// Directory holding one step's agent files:
+    /// `<run>/agents/<NN>-<role>-<adapter>/`. Keyed by the step id so the implement and
+    /// revise turns (and every step) keep separate records.
+    pub fn agent_dir(&self, step_id: usize, role: Role, adapter: Adapter) -> PathBuf {
         self.root.join("agents").join(format!(
-            "{}-{}",
+            "{:02}-{}-{}",
+            step_id,
             sanitize_component(role.as_str()),
             sanitize_component(adapter.as_str())
         ))
     }
 
-    /// Create and return one agent's private home directory.
-    pub fn agent_home(&self, role: Role, adapter: Adapter) -> io::Result<PathBuf> {
-        let home = self.agent_dir(role, adapter).join("home");
+    /// Create and return one step's private home directory.
+    pub fn agent_home(&self, step_id: usize, role: Role, adapter: Adapter) -> io::Result<PathBuf> {
+        let home = self.agent_dir(step_id, role, adapter).join("home");
         fs::create_dir_all(&home)?;
         Ok(home)
     }
@@ -575,8 +578,8 @@ mod tests {
         assert!(!ws.workspace_dir.join(".claude").exists());
         assert!(!ws.workspace_dir.join(".DS_Store").exists());
 
-        let h1 = ws.agent_home(Role::Implementer, Adapter::Claude).unwrap();
-        let h2 = ws.agent_home(Role::Reviewer, Adapter::Codex).unwrap();
+        let h1 = ws.agent_home(1, Role::Implementer, Adapter::Claude).unwrap();
+        let h2 = ws.agent_home(2, Role::Reviewer, Adapter::Codex).unwrap();
         assert!(h1.exists() && h2.exists());
         assert_ne!(h1, h2);
 

@@ -75,6 +75,7 @@ loope adapters                               # list supported adapters
 | `--designer A`           | Override the designer adapter (with `--design`)                 |
 | `--verify-cmd C`         | Run shell command `C` as the verifier; gate passes iff it exits 0 |
 | `--opencode-model M`     | `provider/model` for OpenCode (or `LOOPE_OPENCODE_MODEL`)        |
+| `--timeout SECS`         | Per-step timeout (default 600; `0` disables; or `LOOPE_TIMEOUT`) |
 | `--isolate-home`         | Give each agent a private CLI config dir (default: reuse your login) |
 | `--color WHEN`           | `auto` (default), `always`, or `never`                          |
 
@@ -105,9 +106,10 @@ loop halts with OpenCode's message) rather than a crash.
   run.json             machine-readable run record
   design-contract.md   the Design Contract (with --design or `loope design`)
   workspace/           the working tree the agents read and edit
-  agents/
-    implementer-claude/{home/, prompt.md, transcript.jsonl, result.md}
-    reviewer-codex/{home/, prompt.md, transcript.jsonl, result.md}
+  agents/              one numbered directory per step (the revise turn is its own)
+    01-implementer-claude/{home/, prompt.md, transcript.jsonl, events.jsonl, result.md}
+    02-reviewer-codex/{home/, prompt.md, transcript.jsonl, result.md}
+    03-implementer-claude/...
     ...
 ```
 
@@ -214,6 +216,7 @@ exercise the real agents manually:
 - [Live Terminal Rendering Spec](docs/specs/2026-06-28-loope-live-rendering-spec.md)
 - [OpenCode Adapter Spec](docs/specs/2026-06-28-loope-opencode-adapter-spec.md)
 - [Design Contract Spec](docs/specs/2026-06-28-loope-design-contract-spec.md)
+- [Robustness Spec](docs/specs/2026-06-28-loope-robustness-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)

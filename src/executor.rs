@@ -208,8 +208,11 @@ pub fn execute_plan(
                 })
                 .collect();
             for (s, prompt) in group.iter().zip(&prompts) {
-                workspace.agent_home(s.role, s.adapter)?;
-                atomic_write(&workspace.agent_dir(s.role, s.adapter).join("prompt.md"), prompt)?;
+                workspace.agent_home(s.id, s.role, s.adapter)?;
+                atomic_write(
+                    &workspace.agent_dir(s.id, s.role, s.adapter).join("prompt.md"),
+                    prompt,
+                )?;
             }
 
             let group_outcomes = if group.len() == 1 {
@@ -266,8 +269,8 @@ pub fn execute_plan(
             design_contract.as_deref(),
         );
 
-        let agent_dir = workspace.agent_dir(step.role, step.adapter);
-        let home = workspace.agent_home(step.role, step.adapter)?;
+        let agent_dir = workspace.agent_dir(step.id, step.role, step.adapter);
+        let home = workspace.agent_home(step.id, step.role, step.adapter)?;
         atomic_write(&agent_dir.join("prompt.md"), &prompt)?;
 
         if let Some(observer) = observer {
@@ -425,7 +428,7 @@ fn run_reviewer(
     prompt: &str,
     invoker: &dyn Invoker,
 ) -> io::Result<StepOutcome> {
-    let home = workspace.agent_home(step.role, step.adapter)?;
+    let home = workspace.agent_home(step.id, step.role, step.adapter)?;
     let invocation = AgentInvocation {
         adapter: step.adapter,
         role: step.role,
@@ -442,7 +445,7 @@ fn run_reviewer(
     };
     let duration_ms = step_started.elapsed().as_millis() as u64;
 
-    let agent_dir = workspace.agent_dir(step.role, step.adapter);
+    let agent_dir = workspace.agent_dir(step.id, step.role, step.adapter);
     atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
     atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
     atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
@@ -714,7 +717,7 @@ mod tests {
         let report = fs::read_to_string(ws.root.join("report.md")).unwrap();
         assert!(report.contains("all gates passed"));
         // per-agent files exist
-        let impl_dir = ws.agent_dir(Role::Implementer, Adapter::Claude);
+        let impl_dir = ws.agent_dir(1, Role::Implementer, Adapter::Claude);
         assert!(impl_dir.join("prompt.md").exists());
         assert!(impl_dir.join("result.md").exists());
 
@@ -744,7 +747,7 @@ mod tests {
 
         // the implementer's prompt was given the contract
         let impl_prompt =
-            fs::read_to_string(ws.agent_dir(Role::Implementer, Adapter::Claude).join("prompt.md"))
+            fs::read_to_string(ws.agent_dir(2, Role::Implementer, Adapter::Claude).join("prompt.md"))
                 .unwrap();
         assert!(impl_prompt.contains("## Design contract"));
         assert!(impl_prompt.contains("Implement against this design contract"));
@@ -763,7 +766,7 @@ mod tests {
         execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
 
         let reviewer_prompt =
-            fs::read_to_string(ws.agent_dir(Role::Reviewer, Adapter::Codex).join("prompt.md"))
+            fs::read_to_string(ws.agent_dir(2, Role::Reviewer, Adapter::Codex).join("prompt.md"))
                 .unwrap();
         assert!(reviewer_prompt.contains("Implementer result to review"));
         assert!(reviewer_prompt.contains("IMPLEMENTATION_NOTES.md"));
@@ -934,12 +937,12 @@ mod tests {
             .collect();
         assert_eq!(reviewers.len(), 2);
         assert!(
-            ws.agent_dir(Role::Reviewer, Adapter::Codex)
+            ws.agent_dir(2, Role::Reviewer, Adapter::Codex)
                 .join("result.md")
                 .exists()
         );
         assert!(
-            ws.agent_dir(Role::Reviewer, Adapter::Claude)
+            ws.agent_dir(3, Role::Reviewer, Adapter::Claude)
                 .join("result.md")
                 .exists()
         );
