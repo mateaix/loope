@@ -30,6 +30,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Design Contract generation
 - Robustness (per-step timeout + per-step artifact directories)
 - Iterative loop (convergence, feedback, `apply`, cumulative diff) — v1.0
+- Source layout (domain-grouped modules: `model` / `adapter` / `engine` / `cli`)
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
 > run-directory detail changes, update [`guide/usage.md`](guide/usage.md) (and the

@@ -8,7 +8,7 @@ use std::fs;
 
 use crate::Role;
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
-use crate::event::{ActionKind, LoopEvent};
+use crate::adapter::event::{ActionKind, LoopEvent};
 
 /// An [`Invoker`] that simulates each role deterministically.
 pub struct StubInvoker;

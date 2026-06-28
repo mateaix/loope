@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::Adapter;
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker, resolve_program, spec_for};
-use crate::event::{ActionKind, LoopEvent};
+use crate::adapter::event::{ActionKind, LoopEvent};
 
 /// An [`Invoker`] that runs the adapter's real CLI as a subprocess.
 #[derive(Clone, Debug, Default)]

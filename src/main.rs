@@ -4,13 +4,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-mod theme;
-mod ui;
+mod cli;
 
-use loope::executor::{LoopConfig, StepObserver, execute_loop};
-use loope::stub::StubInvoker;
-use loope::subprocess::SubprocessInvoker;
-use loope::workspace::RunWorkspace;
+use cli::{theme, ui};
+use loope::adapter::{StubInvoker, SubprocessInvoker};
+use loope::engine::workspace::RunWorkspace;
+use loope::engine::{LoopConfig, StepObserver, execute_loop};
 use loope::{
     Adapter, LoopOptions, Role, adapter::Invoker, generate_plan, list_adapters,
 };

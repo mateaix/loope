@@ -243,10 +243,12 @@ exercise the real agents manually:
 - [Design Contract Spec](docs/specs/2026-06-28-loope-design-contract-spec.md)
 - [Robustness Spec](docs/specs/2026-06-28-loope-robustness-spec.md)
 - [Iterative Loop Spec (v1.0)](docs/specs/2026-06-28-loope-iterative-loop-spec.md)
+- [Source Layout Spec](docs/specs/2026-06-29-loope-source-layout-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
 - [Iterative Loop Plan (v1.0)](docs/plans/2026-06-28-loope-iterative-loop-plan.md)
+- [Source Layout Plan](docs/plans/2026-06-29-loope-source-layout-plan.md)
 
 ## License
 

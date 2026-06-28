@@ -10,9 +10,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use loope::event::{ActionKind, LoopEvent};
-use loope::executor::{StepObserver, StepOutcome};
-use loope::workspace::FileChange;
+use loope::adapter::event::{ActionKind, LoopEvent};
+use loope::engine::{StepObserver, StepOutcome};
+use loope::engine::workspace::FileChange;
 use loope::{Adapter, LoopStep, Role};
 
 const RESET: &str = "\x1b[0m";
@@ -51,7 +51,7 @@ impl ColorChoice {
 
 /// Foreground escape for a brand RGB color at the active color level.
 fn fg(r: u8, g: u8, b: u8) -> String {
-    crate::theme::rgb(r, g, b)
+    crate::cli::theme::rgb(r, g, b)
 }
 
 /// Brand color for an adapter: Claude blue, Codex orange, others neutral.

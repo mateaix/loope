@@ -5,10 +5,17 @@
 //! [`InvocationResult`]. The loop engine only depends on the trait, so the real
 //! subprocess invoker and the deterministic stub invoker are interchangeable.
 
+pub mod event;
+pub mod stub;
+pub mod subprocess;
+
+pub use event::LoopEvent;
+pub use stub::StubInvoker;
+pub use subprocess::SubprocessInvoker;
+
 use std::env;
 use std::path::PathBuf;
 
-use crate::event::LoopEvent;
 use crate::{Adapter, Role};
 
 /// Static description of how to launch and talk to one adapter's CLI.

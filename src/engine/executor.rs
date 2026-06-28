@@ -8,9 +8,9 @@ use std::process::Command;
 use std::time::Instant;
 
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
-use crate::event::{LoopEvent, events_to_jsonl};
-use crate::review::{ReviewVerdict, parse_review_verdict};
-use crate::workspace::{
+use crate::adapter::event::{LoopEvent, events_to_jsonl};
+use crate::engine::review::{ReviewVerdict, parse_review_verdict};
+use crate::engine::workspace::{
     FileChange, FileDiff, RunWorkspace, atomic_write, changed_files, compute_file_diffs,
     content_snapshot, render_diffs, snapshot,
 };
@@ -72,7 +72,7 @@ pub trait StepObserver {
     /// Called just before a step's agent (or verify command) runs.
     fn on_step_start(&self, step: &crate::LoopStep);
     /// Called for each normalized event a step emits while it runs. Default no-op.
-    fn on_event(&self, _event: &crate::event::LoopEvent) {}
+    fn on_event(&self, _event: &crate::adapter::event::LoopEvent) {}
     /// Called once a step's outcome (including its gate result) is known.
     fn on_step_finish(&self, outcome: &StepOutcome);
 }
@@ -804,8 +804,8 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::adapter::AgentInvocation;
-    use crate::stub::StubInvoker;
-    use crate::workspace::RunWorkspace;
+    use crate::adapter::stub::StubInvoker;
+    use crate::engine::workspace::RunWorkspace;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
