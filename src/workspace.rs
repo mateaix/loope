@@ -195,6 +195,225 @@ pub fn changed_files(before: &FsSnapshot, after: &FsSnapshot) -> Vec<String> {
     changed
 }
 
+/// Largest file (bytes) whose text content is captured for diffing.
+const MAX_DIFF_FILE_BYTES: u64 = 512 * 1024;
+
+/// A file's change summary for the report and run record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileChange {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+    /// Changed but not diffable as text (binary or too large).
+    pub binary: bool,
+}
+
+/// A file change plus its unified diff text (persisted to `changes.diff`).
+#[derive(Clone, Debug)]
+pub struct FileDiff {
+    pub change: FileChange,
+    pub unified: String,
+}
+
+/// Capture the UTF-8 text content of every (small enough) file under `dir`, keyed by
+/// relative path. Binary and oversized files are omitted.
+pub fn content_snapshot(dir: &Path) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    let _ = collect_content(dir, dir, &mut map);
+    map
+}
+
+fn collect_content(base: &Path, dir: &Path, out: &mut BTreeMap<String, String>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            collect_content(base, &entry.path(), out)?;
+        } else if file_type.is_file() {
+            if SKIP_FILES.contains(&name.as_ref()) {
+                continue;
+            }
+            let path = entry.path();
+            if entry.metadata()?.len() > MAX_DIFF_FILE_BYTES {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(&path) {
+                let rel = path
+                    .strip_prefix(base)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+                out.insert(rel, text);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a [`FileDiff`] for every changed path, using the captured before-content and
+/// the file's current (after) content.
+pub fn compute_file_diffs(
+    workspace_dir: &Path,
+    changed: &[String],
+    before_content: &BTreeMap<String, String>,
+) -> Vec<FileDiff> {
+    let mut diffs = Vec::new();
+    for path in changed {
+        let before = before_content.get(path).map(|s| s.as_str());
+        let after = fs::read_to_string(workspace_dir.join(path)).ok();
+        let diff = match (before, after.as_deref()) {
+            (Some(b), Some(a)) => {
+                let (added, removed, unified) = diff_lines(b, a);
+                FileDiff {
+                    change: FileChange {
+                        path: path.clone(),
+                        added,
+                        removed,
+                        binary: false,
+                    },
+                    unified,
+                }
+            }
+            (None, Some(a)) => {
+                let unified: String = a.lines().map(|l| format!("+{l}\n")).collect();
+                FileDiff {
+                    change: FileChange {
+                        path: path.clone(),
+                        added: a.lines().count(),
+                        removed: 0,
+                        binary: false,
+                    },
+                    unified,
+                }
+            }
+            (Some(b), None) => {
+                let unified: String = b.lines().map(|l| format!("-{l}\n")).collect();
+                FileDiff {
+                    change: FileChange {
+                        path: path.clone(),
+                        added: 0,
+                        removed: b.lines().count(),
+                        binary: false,
+                    },
+                    unified,
+                }
+            }
+            (None, None) => FileDiff {
+                change: FileChange {
+                    path: path.clone(),
+                    added: 0,
+                    removed: 0,
+                    binary: true,
+                },
+                unified: String::new(),
+            },
+        };
+        diffs.push(diff);
+    }
+    diffs
+}
+
+/// Render a set of diffs as a single `changes.diff` document.
+pub fn render_diffs(diffs: &[FileDiff]) -> String {
+    let mut out = String::new();
+    for diff in diffs {
+        out.push_str(&format!("diff a/{0} b/{0}\n", diff.change.path));
+        if diff.change.binary {
+            out.push_str("Binary file changed\n\n");
+        } else {
+            out.push_str(&format!("--- a/{0}\n+++ b/{0}\n", diff.change.path));
+            out.push_str(&diff.unified);
+            if !diff.unified.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Line-based diff returning (added, removed, unified-body). Uses an LCS for normal
+/// files and a cheap multiset count for very large ones.
+pub fn diff_lines(before: &str, after: &str) -> (usize, usize, String) {
+    let a: Vec<&str> = before.lines().collect();
+    let b: Vec<&str> = after.lines().collect();
+
+    if (a.len() + 1).saturating_mul(b.len() + 1) > 4_000_000 {
+        return cheap_diff(&a, &b);
+    }
+
+    let (n, m) = (a.len(), b.len());
+    // lcs[i][j] = length of the longest common subsequence of a[i..] and b[j..].
+    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    let (mut i, mut j) = (0, 0);
+    let (mut added, mut removed) = (0, 0);
+    let mut out = String::new();
+    while i < n && j < m {
+        if a[i] == b[j] {
+            out.push_str(&format!(" {}\n", a[i]));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            out.push_str(&format!("-{}\n", a[i]));
+            removed += 1;
+            i += 1;
+        } else {
+            out.push_str(&format!("+{}\n", b[j]));
+            added += 1;
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push_str(&format!("-{}\n", a[i]));
+        removed += 1;
+        i += 1;
+    }
+    while j < m {
+        out.push_str(&format!("+{}\n", b[j]));
+        added += 1;
+        j += 1;
+    }
+    (added, removed, out)
+}
+
+/// Count-only diff for files too large for the LCS table.
+fn cheap_diff(a: &[&str], b: &[&str]) -> (usize, usize, String) {
+    use std::collections::HashMap;
+    let mut counts: HashMap<&str, i64> = HashMap::new();
+    for line in a {
+        *counts.entry(line).or_default() += 1;
+    }
+    for line in b {
+        *counts.entry(line).or_default() -= 1;
+    }
+    let removed = counts.values().filter(|v| **v > 0).map(|v| *v as usize).sum();
+    let added = counts
+        .values()
+        .filter(|v| **v < 0)
+        .map(|v| (-*v) as usize)
+        .sum();
+    (added, removed, "(diff too large to display)\n".to_string())
+}
+
 /// Recursively copy `src` into `dst`, skipping heavy/irrelevant directories and
 /// symlinks.
 fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
@@ -310,6 +529,54 @@ mod tests {
         assert!(changed.contains(&"edit.txt".to_string()));
         assert!(!changed.contains(&"keep.txt".to_string()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_counts_modifications() {
+        let before = "a\nb\nc\n";
+        let after = "a\nB\nc\nd\n";
+        let (added, removed, unified) = diff_lines(before, after);
+        assert_eq!(removed, 1); // b
+        assert_eq!(added, 2); // B and d
+        assert!(unified.contains("-b"));
+        assert!(unified.contains("+B"));
+        assert!(unified.contains("+d"));
+        assert!(unified.contains(" a")); // context kept
+    }
+
+    #[test]
+    fn diff_added_and_deleted_files() {
+        let (added, removed, _) = diff_lines("", "x\ny\n");
+        assert_eq!((added, removed), (2, 0));
+        let (added, removed, _) = diff_lines("x\ny\n", "");
+        assert_eq!((added, removed), (0, 2));
+    }
+
+    #[test]
+    fn compute_file_diffs_reports_per_file_stats() {
+        let base = temp_base("diffs");
+        // before: a.txt = "1\n2\n"; new.txt absent
+        let before = {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("a.txt".to_string(), "1\n2\n".to_string());
+            m
+        };
+        // after on disk: a.txt = "1\n2\n3\n"; new.txt = "hi\n"
+        fs::write(base.join("a.txt"), "1\n2\n3\n").unwrap();
+        fs::write(base.join("new.txt"), "hi\n").unwrap();
+
+        let diffs = compute_file_diffs(
+            &base,
+            &["a.txt".to_string(), "new.txt".to_string()],
+            &before,
+        );
+        let a = diffs.iter().find(|d| d.change.path == "a.txt").unwrap();
+        assert_eq!((a.change.added, a.change.removed), (1, 0));
+        let new = diffs.iter().find(|d| d.change.path == "new.txt").unwrap();
+        assert_eq!((new.change.added, new.change.removed), (1, 0));
+        assert!(render_diffs(&diffs).contains("+3"));
+
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

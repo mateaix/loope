@@ -8,6 +8,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use crate::event::LoopEvent;
 use crate::{Adapter, Role};
 
 /// Static description of how to launch and talk to one adapter's CLI.
@@ -118,6 +119,17 @@ impl InvocationResult {
 /// the deterministic stub invoker.
 pub trait Invoker {
     fn invoke(&self, invocation: &AgentInvocation) -> InvocationResult;
+
+    /// Streaming variant: emit [`LoopEvent`]s to `sink` as they happen. The default
+    /// implementation runs `invoke` and emits nothing, so invokers that don't stream
+    /// keep working unchanged.
+    fn invoke_streaming(
+        &self,
+        invocation: &AgentInvocation,
+        _sink: &mut dyn FnMut(LoopEvent),
+    ) -> InvocationResult {
+        self.invoke(invocation)
+    }
 }
 
 #[cfg(test)]

@@ -8,21 +8,59 @@ use std::fs;
 
 use crate::Role;
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
+use crate::event::{ActionKind, LoopEvent};
 
 /// An [`Invoker`] that simulates each role deterministically.
 pub struct StubInvoker;
 
 impl Invoker for StubInvoker {
+    fn invoke_streaming(
+        &self,
+        inv: &AgentInvocation,
+        sink: &mut dyn FnMut(LoopEvent),
+    ) -> InvocationResult {
+        // Emit a couple of synthetic events so the live feed's shape is visible in
+        // --dry-run, then do the deterministic work.
+        match inv.role {
+            Role::Designer => sink(LoopEvent::Action {
+                kind: ActionKind::Write,
+                target: "DESIGN_CONTRACT.md".to_string(),
+            }),
+            Role::Implementer => {
+                sink(LoopEvent::Action {
+                    kind: ActionKind::Edit,
+                    target: "IMPLEMENTATION_NOTES.md".to_string(),
+                });
+                sink(LoopEvent::Message {
+                    text: "applied a scoped stub change".to_string(),
+                });
+            }
+            Role::Reviewer => sink(LoopEvent::Message {
+                text: "reviewed (stub): no blocking findings".to_string(),
+            }),
+            Role::Verifier => {}
+        }
+        self.invoke(inv)
+    }
+
     fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
         match inv.role {
-            Role::Designer => InvocationResult {
-                success: true,
-                message: "Design contract (stub): user flows, UI states, component \
-                          boundaries, API/data contracts, and acceptance criteria recorded."
-                    .to_string(),
-                changed_files: vec!["DESIGN_CONTRACT.md".to_string()],
-                transcript: stub_transcript(inv),
-            },
+            Role::Designer => {
+                let contract = inv.workspace_dir.join("DESIGN_CONTRACT.md");
+                let _ = fs::write(
+                    &contract,
+                    "# Design contract (stub)\n\nUser flows, UI states, component \
+                     boundaries, API/data contracts, and acceptance criteria.\n",
+                );
+                InvocationResult {
+                    success: true,
+                    message: "Design contract (stub): user flows, UI states, component \
+                              boundaries, API/data contracts, and acceptance criteria recorded."
+                        .to_string(),
+                    changed_files: vec!["DESIGN_CONTRACT.md".to_string()],
+                    transcript: stub_transcript(inv),
+                }
+            }
             Role::Implementer => {
                 // Simulate a real change so the reviewer has something to read.
                 let note = inv.workspace_dir.join("IMPLEMENTATION_NOTES.md");

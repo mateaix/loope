@@ -195,6 +195,51 @@ fn preset_dual_review_runs_two_reviewers() {
 }
 
 #[test]
+fn run_writes_events_and_show_diff_prints_changes() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("events");
+
+    let run = Command::new(exe)
+        .args(["run", "--dry-run", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+    assert!(run.status.success());
+
+    // the implementer step persisted a normalized event stream
+    let events = cwd
+        .join(".loope")
+        .join("runs")
+        .join("run-0001")
+        .join("agents")
+        .join("implementer-claude")
+        .join("events.jsonl");
+    let events_text = fs::read_to_string(&events).expect("events.jsonl");
+    assert!(events_text.contains("\"type\":\"action\""));
+
+    // the report shows change stats
+    let report = Command::new(exe)
+        .args(["show", "run-0001"])
+        .current_dir(&cwd)
+        .output()
+        .expect("show");
+    let report_out = String::from_utf8(report.stdout).unwrap();
+    assert!(report_out.contains("IMPLEMENTATION_NOTES.md"));
+
+    // show --diff prints the persisted unified diff
+    let diff = Command::new(exe)
+        .args(["show", "run-0001", "--diff"])
+        .current_dir(&cwd)
+        .output()
+        .expect("show --diff");
+    let diff_out = String::from_utf8(diff.stdout).unwrap();
+    assert!(diff_out.contains("# Changes"));
+    assert!(diff_out.contains("+# Implementation notes"));
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn run_requires_a_requirement() {
     let exe = env!("CARGO_BIN_EXE_loope");
     let cwd = temp_dir("norq");

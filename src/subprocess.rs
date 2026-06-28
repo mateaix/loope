@@ -8,11 +8,13 @@
 //! This path requires the real `claude` / `codex` binaries and is therefore exercised
 //! by the manual checklist in the README rather than by automated tests.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
+use std::thread;
 
 use crate::Adapter;
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker, resolve_program, spec_for};
+use crate::event::{ActionKind, LoopEvent};
 
 /// An [`Invoker`] that runs the adapter's real CLI as a subprocess.
 #[derive(Clone, Copy, Debug, Default)]
@@ -24,6 +26,15 @@ pub struct SubprocessInvoker {
 
 impl Invoker for SubprocessInvoker {
     fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+        // The non-streaming path just discards events.
+        self.invoke_streaming(inv, &mut |_| {})
+    }
+
+    fn invoke_streaming(
+        &self,
+        inv: &AgentInvocation,
+        sink: &mut dyn FnMut(LoopEvent),
+    ) -> InvocationResult {
         let spec = spec_for(inv.adapter);
         let Some(program) = resolve_program(&spec) else {
             return InvocationResult::failure(format!(
@@ -60,43 +71,51 @@ impl Invoker for SubprocessInvoker {
             let _ = stdin.write_all(inv.prompt.as_bytes());
         }
 
-        // `wait_with_output` drains stdout/stderr while waiting, avoiding pipe deadlock.
-        let output = match child.wait_with_output() {
-            Ok(output) => output,
-            Err(err) => return InvocationResult::failure(format!("capturing output failed: {err}")),
-        };
+        // Drain stderr on a thread so a chatty child can't deadlock the stdout reader.
+        let stderr_handle = child.stderr.take().map(|mut err| {
+            thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = err.read_to_string(&mut buf);
+                buf
+            })
+        });
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let success = output.status.success();
+        // Read stdout line by line, parsing each into events as it arrives.
+        let mut stdout = String::new();
+        if let Some(out) = child.stdout.take() {
+            for line in BufReader::new(out).lines() {
+                let Ok(line) = line else { break };
+                for event in parse_event(inv.adapter, &line) {
+                    sink(event);
+                }
+                stdout.push_str(&line);
+                stdout.push('\n');
+            }
+        }
+
+        let status = child.wait();
+        let stderr = stderr_handle
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default();
+        let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
+        let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
 
         let message = if success {
-            // Prefer Codex's verbatim last-message file; else the last agent message
-            // from its JSONL event stream; else trimmed stdout.
-            let codex_message = codex_output
-                .as_deref()
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .or_else(|| extract_last_agent_message(&stdout));
-            match codex_message {
-                Some(msg) => msg,
-                None => {
-                    let trimmed = stdout.trim();
-                    if trimmed.is_empty() {
-                        "(no output)".to_string()
-                    } else {
-                        trimmed.to_string()
-                    }
+            adapter_message(inv.adapter, codex_output.as_deref(), &stdout).unwrap_or_else(|| {
+                let trimmed = stdout.trim();
+                if trimmed.is_empty() {
+                    "(no output)".to_string()
+                } else {
+                    trimmed.to_string()
                 }
-            }
+            })
         } else {
             let detail = if stderr.trim().is_empty() {
                 stdout.trim()
             } else {
                 stderr.trim()
             };
-            format!("exit {}: {detail}", output.status.code().unwrap_or(-1))
+            format!("exit {code}: {detail}")
         };
 
         InvocationResult {
@@ -106,6 +125,35 @@ impl Invoker for SubprocessInvoker {
             transcript: format!("--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n"),
         }
     }
+}
+
+/// Derive a step's final message from its captured stream, per adapter.
+fn adapter_message(adapter: Adapter, codex_output: Option<&std::path::Path>, stdout: &str) -> Option<String> {
+    match adapter {
+        Adapter::Codex => codex_output
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| extract_last_agent_message(stdout)),
+        Adapter::Claude => extract_claude_result(stdout),
+        _ => {
+            let trimmed = stdout.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+    }
+}
+
+/// Extract Claude's final `result` text from a `stream-json` stdout.
+fn extract_claude_result(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        if line.contains("\"type\":\"result\"")
+            && let Some(text) = extract_json_string_field(line, "result")
+            && !text.trim().is_empty()
+        {
+            return Some(text.trim().to_string());
+        }
+    }
+    None
 }
 
 /// Apply per-adapter headless flags. The prompt is delivered on stdin for every
@@ -120,8 +168,9 @@ fn configure_command(
 ) {
     match inv.adapter {
         Adapter::Claude => {
-            // Print (headless) mode.
+            // Print (headless) mode with a structured event stream we can parse live.
             cmd.arg("-p");
+            cmd.args(["--output-format", "stream-json", "--verbose"]);
             // Read-only steps plan only; write-capable steps may edit the workspace.
             if inv.read_only {
                 cmd.args(["--permission-mode", "plan"]);
@@ -201,9 +250,209 @@ fn extract_json_string_field(line: &str, field: &str) -> Option<String> {
     None
 }
 
+/// Parse one Claude `--output-format stream-json` line into normalized events.
+/// Content blocks are bounded by splitting on the `{"type":"` marker.
+fn parse_claude_event(line: &str) -> Vec<LoopEvent> {
+    let mut events = Vec::new();
+    for seg in line.split("{\"type\":\"") {
+        if let Some(rest) = seg.strip_prefix("tool_use\"") {
+            if let Some(name) = extract_json_string_field(rest, "name") {
+                let target = extract_json_string_field(rest, "file_path")
+                    .or_else(|| extract_json_string_field(rest, "command"))
+                    .or_else(|| extract_json_string_field(rest, "pattern"))
+                    .or_else(|| extract_json_string_field(rest, "path"))
+                    .unwrap_or_else(|| name.clone());
+                events.push(LoopEvent::Action {
+                    kind: map_claude_tool(&name),
+                    target: shorten_target(&target),
+                });
+            }
+        } else if let Some(rest) = seg.strip_prefix("text\"") {
+            if let Some(text) = extract_json_string_field(rest, "text")
+                && !text.trim().is_empty()
+            {
+                events.push(LoopEvent::Message {
+                    text: shorten_message(text.trim()),
+                });
+            }
+        } else if seg.starts_with("result\"")
+            && let (Some(input), Some(output)) = (
+                extract_json_u64(line, "input_tokens"),
+                extract_json_u64(line, "output_tokens"),
+            )
+        {
+            events.push(LoopEvent::Usage {
+                input_tokens: input,
+                output_tokens: output,
+            });
+        }
+    }
+    events
+}
+
+/// Parse one Codex `--json` line into normalized events.
+fn parse_codex_event(line: &str) -> Vec<LoopEvent> {
+    let mut events = Vec::new();
+    if line.contains("\"item.started\"")
+        && line.contains("\"command_execution\"")
+        && let Some(command) = extract_json_string_field(line, "command")
+    {
+        events.push(LoopEvent::Action {
+            kind: ActionKind::Command,
+            target: shorten_target(&command),
+        });
+    }
+    if line.contains("\"item.completed\"")
+        && line.contains("\"agent_message\"")
+        && let Some(text) = extract_json_string_field(line, "text")
+        && !text.trim().is_empty()
+    {
+        events.push(LoopEvent::Message {
+            text: shorten_message(text.trim()),
+        });
+    }
+    if line.contains("\"turn.completed\"")
+        && let (Some(input), Some(output)) = (
+            extract_json_u64(line, "input_tokens"),
+            extract_json_u64(line, "output_tokens"),
+        )
+    {
+        events.push(LoopEvent::Usage {
+            input_tokens: input,
+            output_tokens: output,
+        });
+    }
+    events
+}
+
+/// Dispatch to the adapter's event parser.
+fn parse_event(adapter: Adapter, line: &str) -> Vec<LoopEvent> {
+    match adapter {
+        Adapter::Claude => parse_claude_event(line),
+        Adapter::Codex => parse_codex_event(line),
+        _ => Vec::new(),
+    }
+}
+
+/// Map a Claude tool name to an action kind.
+fn map_claude_tool(name: &str) -> ActionKind {
+    match name {
+        "Write" => ActionKind::Write,
+        "Edit" | "MultiEdit" | "NotebookEdit" => ActionKind::Edit,
+        "Read" | "NotebookRead" => ActionKind::Read,
+        "Bash" | "BashOutput" | "KillBash" => ActionKind::Command,
+        "Grep" | "Glob" | "WebSearch" | "WebFetch" => ActionKind::Search,
+        _ => ActionKind::Other,
+    }
+}
+
+/// Extract an unsigned integer JSON field value from a line.
+fn extract_json_u64(line: &str, field: &str) -> Option<u64> {
+    let key = format!("\"{field}\":");
+    let start = line.find(&key)? + key.len();
+    let digits: String = line[start..]
+        .chars()
+        .skip_while(|c| c.is_whitespace())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// Trim an action target (path or command) for display: keep the tail of long paths.
+fn shorten_target(target: &str) -> String {
+    let target = target.trim();
+    if target.contains('/') && target.len() > 48 {
+        let tail: Vec<&str> = target.rsplit('/').take(2).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join("/");
+        format!("…/{tail}")
+    } else if target.len() > 64 {
+        format!("{}…", &target[..63])
+    } else {
+        target.to_string()
+    }
+}
+
+/// Collapse an assistant message to a single short line.
+fn shorten_message(text: &str) -> String {
+    let first = text.lines().next().unwrap_or("").trim();
+    if first.chars().count() > 80 {
+        let truncated: String = first.chars().take(79).collect();
+        format!("{truncated}…")
+    } else {
+        first.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_claude_tool_use_and_text() {
+        let line = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"text\",\"text\":\"I'll create that file.\"},\
+            {\"type\":\"tool_use\",\"id\":\"x\",\"name\":\"Write\",\"input\":{\"file_path\":\"/tmp/ws/notes.txt\"}}]}}";
+        let events = parse_claude_event(line);
+        assert_eq!(
+            events,
+            vec![
+                LoopEvent::Message {
+                    text: "I'll create that file.".to_string()
+                },
+                LoopEvent::Action {
+                    kind: ActionKind::Write,
+                    target: "/tmp/ws/notes.txt".to_string()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_claude_bash_and_result_usage() {
+        let bash = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo test\"}}]}}";
+        assert_eq!(
+            parse_claude_event(bash),
+            vec![LoopEvent::Action {
+                kind: ActionKind::Command,
+                target: "cargo test".to_string()
+            }]
+        );
+        let result = "{\"type\":\"result\",\"subtype\":\"success\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}";
+        assert_eq!(
+            parse_claude_event(result),
+            vec![LoopEvent::Usage {
+                input_tokens: 12,
+                output_tokens: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_codex_command_and_message() {
+        let started = "{\"type\":\"item.started\",\"item\":{\"type\":\"command_execution\",\"command\":\"ls -la\",\"status\":\"in_progress\"}}";
+        assert_eq!(
+            parse_codex_event(started),
+            vec![LoopEvent::Action {
+                kind: ActionKind::Command,
+                target: "ls -la".to_string()
+            }]
+        );
+        let msg = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"VERDICT: PASS\"}}";
+        assert_eq!(
+            parse_codex_event(msg),
+            vec![LoopEvent::Message {
+                text: "VERDICT: PASS".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn shortens_long_paths() {
+        let long = "/private/tmp/claude/very/deep/workspace/src/lib.rs";
+        assert_eq!(shorten_target(long), "…/src/lib.rs");
+        assert_eq!(shorten_target("src/lib.rs"), "src/lib.rs");
+    }
 
     #[test]
     fn extracts_last_agent_message_from_jsonl() {

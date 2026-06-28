@@ -132,11 +132,27 @@ The review phase is structured and can fan out across agents:
 ## Terminal UI
 
 On a TTY, `loope run` renders a small visual identity built from Loope's own motifs —
-the `∞` loop glyph, a `design → implement → review → verify` pipeline, live per-step
-progress (`running…` resolving in place to `✓`/`✗`), and a colored summary box that
-also lists every step with its gate result and review verdict. `loope show <run-id>`
-renders the same colored summary for a past run. Agents are tinted by the logo's
-palette: Claude blue, Codex orange.
+the `∞` loop glyph and a `design → implement → review → verify` pipeline, tinted by the
+logo's palette (Claude blue, Codex orange).
+
+While a step runs, Loope streams the agent's actions as a **live activity feed** —
+parsed from each CLI's event stream — so you can see what it's doing:
+
+```text
+  ▸ 1 implementer · Claude
+      ✎ edit   src/lib.rs
+      ▸ run    cargo build
+      › Added multiply(a, b) with a test.
+  ✓ 1 implementer · Claude   src/lib.rs +12 −0
+```
+
+After each write step, the **changed files and `+/−` line stats** are shown live and in
+the report; a unified diff is persisted to `agents/<step>/changes.diff`. View it with:
+
+```bash
+loope show run-0001 --diff      # colored summary + the run's diffs
+loope run --quiet "..."         # suppress the live feed; keep step results
+```
 
 Color is automatic on a terminal and off when piped or when `NO_COLOR` is set; override
 with `--color auto|always|never`. Piped/CI output stays plain markdown.
@@ -179,6 +195,7 @@ exercise the real agents manually:
 - [Agent Integration Spec](docs/specs/2026-06-28-loope-agent-integration-spec.md)
 - [Review Orchestration Spec](docs/specs/2026-06-28-loope-review-orchestration-spec.md)
 - [CLI UX Spec](docs/specs/2026-06-28-loope-cli-ux-spec.md)
+- [Live Execution Visibility Spec](docs/specs/2026-06-28-loope-live-visibility-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)

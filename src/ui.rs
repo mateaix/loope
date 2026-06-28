@@ -7,7 +7,9 @@
 
 use std::io::{IsTerminal, Write, stdout};
 
+use loope::event::{ActionKind, LoopEvent};
 use loope::executor::{StepObserver, StepOutcome};
+use loope::workspace::FileChange;
 use loope::{Adapter, LoopPlan, LoopStep, Role};
 
 const RESET: &str = "\x1b[0m";
@@ -104,41 +106,98 @@ fn role_verb(role: Role) -> &'static str {
     }
 }
 
-/// Live step renderer: prints a `running…` line that resolves in place on finish.
-pub struct PrettyObserver;
+/// Live step renderer: a streaming activity feed under each step header.
+pub struct PrettyObserver {
+    /// When true, suppress the per-event feed but still show step headers/results.
+    pub quiet: bool,
+}
 
 impl StepObserver for PrettyObserver {
     fn on_step_start(&self, step: &LoopStep) {
-        print!(
-            "  {DIM}◌ {} {:<11}{RESET} {}{}{RESET} {DIM}running…{RESET}",
-            step.id,
-            step.role.as_str(),
-            adapter_color(step.adapter),
-            step.adapter.display_name(),
-            RESET = RESET,
-            DIM = DIM,
+        let blue = fg(28, 155, 240);
+        println!(
+            "\n  {blue}▸{RESET} {DIM}{id}{RESET} {role:<11} {DIM}·{RESET} {ac}{agent}{RESET}",
+            id = step.id,
+            role = step.role.as_str(),
+            ac = adapter_color(step.adapter),
+            agent = step.adapter.display_name(),
         );
         let _ = stdout().flush();
     }
 
+    fn on_event(&self, event: &LoopEvent) {
+        if self.quiet {
+            return;
+        }
+        match event {
+            LoopEvent::Action { kind, target } => {
+                println!(
+                    "      {DIM}{icon} {label:<6}{RESET} {DIM}{target}{RESET}",
+                    icon = action_icon(*kind),
+                    label = kind.label(),
+                );
+            }
+            LoopEvent::Message { text } => {
+                println!("      {DIM}› {text}{RESET}");
+            }
+            LoopEvent::Model { .. } | LoopEvent::Usage { .. } => {}
+        }
+        let _ = stdout().flush();
+    }
+
     fn on_step_finish(&self, outcome: &StepOutcome) {
-        let (icon, r, g, b) = if outcome.gate_passed {
-            ("✓", GREEN.0, GREEN.1, GREEN.2)
+        let (icon, accent) = if outcome.gate_passed {
+            ("✓", GREEN)
         } else {
-            ("✗", RED.0, RED.1, RED.2)
+            ("✗", RED)
         };
-        // \r returns to column 0; \x1b[K clears the running line.
+        let (r, g, b) = accent;
         println!(
-            "\r\x1b[K  {status}{icon}{RESET} {DIM}{id}{RESET} {role:<11} {ac}{agent}{RESET}  {DIM}{notes}{RESET}",
+            "  {status}{icon}{RESET} {DIM}{id}{RESET} {role:<11} {ac}{agent}{RESET}  {DIM}{notes}{RESET}{stats}",
             status = fg(r, g, b),
-            icon = icon,
             id = outcome.step_id,
             role = outcome.role.as_str(),
             ac = adapter_color(outcome.adapter),
             agent = outcome.adapter.display_name(),
             notes = outcome.gate_notes,
+            stats = change_stats(&outcome.changes),
         );
     }
+}
+
+/// A small glyph for an action kind.
+fn action_icon(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::Read => "◇",
+        ActionKind::Edit | ActionKind::Write => "✎",
+        ActionKind::Command => "▸",
+        ActionKind::Search => "⌕",
+        ActionKind::Other => "·",
+    }
+}
+
+/// Colored ` path +A −R` stats for a finished step (first few files).
+fn change_stats(changes: &[FileChange]) -> String {
+    if changes.is_empty() {
+        return String::new();
+    }
+    let green = fg(GREEN.0, GREEN.1, GREEN.2);
+    let red = fg(RED.0, RED.1, RED.2);
+    let mut parts = Vec::new();
+    for change in changes.iter().take(3) {
+        if change.binary {
+            parts.push(format!("{DIM}{} (bin){RESET}", change.path));
+        } else {
+            parts.push(format!(
+                "{DIM}{}{RESET} {green}+{}{RESET} {red}−{}{RESET}",
+                change.path, change.added, change.removed
+            ));
+        }
+    }
+    if changes.len() > 3 {
+        parts.push(format!("{DIM}+{} more{RESET}", changes.len() - 3));
+    }
+    format!("  {}", parts.join(&format!("{DIM}, {RESET}")))
 }
 
 /// Render a Loope report. In plain mode the markdown is printed verbatim (so piping
@@ -186,6 +245,9 @@ pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
                 format!("{note} · {verdict}")
             };
         }
+        if !step.changes.is_empty() {
+            note = format!("{note} · {}", step.changes.join(", "));
+        }
         println!(
             "  {sc}{icon}{RESET} {DIM}{num}{RESET} {role:<11} {DIM}·{RESET} {ac}{adapter}{RESET}  {DIM}{note}{RESET}",
             sc = fg(sr, sg, sb),
@@ -219,6 +281,7 @@ struct StepLine {
     passed: bool,
     gate_result: String,
     verdict: Option<String>,
+    changes: Vec<String>,
 }
 
 /// Parse the `## Steps` section of a Loope report markdown.
@@ -237,6 +300,7 @@ fn parse_steps(md: &str) -> Vec<StepLine> {
                 passed,
                 gate_result: String::new(),
                 verdict: None,
+                changes: Vec::new(),
             });
         } else if let Some(step) = current.as_mut() {
             let trimmed = line.trim();
@@ -244,6 +308,8 @@ fn parse_steps(md: &str) -> Vec<StepLine> {
                 step.gate_result = value.trim().to_string();
             } else if let Some(value) = trimmed.strip_prefix("- Verdict: ") {
                 step.verdict = Some(value.trim().to_string());
+            } else if let Some(value) = trimmed.strip_prefix("- Changed: ") {
+                step.changes.push(value.trim().to_string());
             }
         }
     }
@@ -293,6 +359,33 @@ impl RunSummary {
             "halted on a blocking gate"
         } else {
             "completed with gate failures"
+        }
+    }
+}
+
+/// Print a unified diff, colored on a TTY (additions green, removals red, headers
+/// bold/dim).
+pub fn print_diff(diff: &str, color: bool) {
+    if !color {
+        print!("{diff}");
+        if !diff.is_empty() && !diff.ends_with('\n') {
+            println!();
+        }
+        return;
+    }
+    let green = fg(GREEN.0, GREEN.1, GREEN.2);
+    let red = fg(RED.0, RED.1, RED.2);
+    for line in diff.lines() {
+        if line.starts_with("diff ") {
+            println!("  {BOLD}{line}{RESET}");
+        } else if line.starts_with("+++") || line.starts_with("---") {
+            println!("  {DIM}{line}{RESET}");
+        } else if line.starts_with('+') {
+            println!("  {green}{line}{RESET}");
+        } else if line.starts_with('-') {
+            println!("  {red}{line}{RESET}");
+        } else {
+            println!("  {DIM}{line}{RESET}");
         }
     }
 }

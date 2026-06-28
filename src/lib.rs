@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod event;
 pub mod executor;
 pub mod review;
 pub mod stub;

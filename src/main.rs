@@ -62,6 +62,7 @@ fn cmd_run(args: &mut Vec<String>) {
     let in_place = remove_flag(args, "--in-place");
     let include_design = remove_flag(args, "--design");
     let isolate_home = remove_flag(args, "--isolate-home");
+    let quiet = remove_flag(args, "--quiet");
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     let approve = remove_value(args, "--approve").unwrap_or_else(|| "auto".to_string());
     let workdir = remove_value(args, "--workdir");
@@ -134,7 +135,8 @@ fn cmd_run(args: &mut Vec<String>) {
         Box::new(SubprocessInvoker { isolate_home })
     };
     let options = ExecuteOptions { verify_command };
-    let observer: Option<&dyn StepObserver> = if color { Some(&PrettyObserver) } else { None };
+    let pretty = PrettyObserver { quiet };
+    let observer: Option<&dyn StepObserver> = if color { Some(&pretty) } else { None };
 
     let run = match execute_plan(&plan, &workspace, invoker.as_ref(), &options, observer) {
         Ok(run) => run,
@@ -190,6 +192,7 @@ fn read_run_summary(run_dir: &Path) -> Option<ui::RunSummary> {
 
 fn cmd_show(args: &mut Vec<String>) {
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
+    let show_diff = remove_flag(args, "--diff");
     let Some(run_id) = args.first() else {
         eprintln!("loope show requires a run id, e.g. loope show run-0001");
         process::exit(2);
@@ -204,6 +207,37 @@ fn cmd_show(args: &mut Vec<String>) {
             process::exit(1);
         }
     }
+
+    if show_diff {
+        let diffs = collect_run_diffs(&run_dir);
+        if diffs.trim().is_empty() {
+            println!("\n(no recorded changes for {run_id})");
+        } else {
+            println!("\n# Changes\n");
+            ui::print_diff(&diffs, color);
+        }
+    }
+}
+
+/// Concatenate every step's `changes.diff` for a run, in step order.
+fn collect_run_diffs(run_dir: &Path) -> String {
+    let agents = run_dir.join("agents");
+    let mut dirs: Vec<PathBuf> = match fs::read_dir(&agents) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => return String::new(),
+    };
+    dirs.sort();
+    let mut out = String::new();
+    for dir in dirs {
+        if let Ok(diff) = fs::read_to_string(dir.join("changes.diff")) {
+            out.push_str(&diff);
+        }
+    }
+    out
 }
 
 fn confirm_plan(plan: &loope::LoopPlan, source: &Path, in_place: bool) -> bool {
@@ -377,7 +411,11 @@ run flags:
   --designer A    Override the designer adapter (with --design).
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).
+  --quiet         Suppress the live activity feed; keep step results and summary.
   --color WHEN    'auto' (default), 'always', or 'never' for terminal coloring.
+
+show flags:
+  --diff          Also print the persisted diffs for the run.
 
 Runs are written to .loope/runs/<run-id>/."
     );

@@ -6,8 +6,12 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
+use crate::event::{LoopEvent, events_to_jsonl};
 use crate::review::{ReviewVerdict, parse_review_verdict};
-use crate::workspace::{RunWorkspace, atomic_write, changed_files, snapshot};
+use crate::workspace::{
+    FileChange, FileDiff, RunWorkspace, atomic_write, changed_files, compute_file_diffs,
+    content_snapshot, render_diffs, snapshot,
+};
 use crate::{Adapter, LoopPlan, Role, prompt_for_step};
 
 /// Options controlling how a loop executes.
@@ -22,6 +26,8 @@ pub struct ExecuteOptions {
 pub trait StepObserver {
     /// Called just before a step's agent (or verify command) runs.
     fn on_step_start(&self, step: &crate::LoopStep);
+    /// Called for each normalized event a step emits while it runs. Default no-op.
+    fn on_event(&self, _event: &crate::event::LoopEvent) {}
     /// Called once a step's outcome (including its gate result) is known.
     fn on_step_finish(&self, outcome: &StepOutcome);
 }
@@ -39,6 +45,8 @@ pub struct StepOutcome {
     pub gate_notes: String,
     /// For reviewer steps, the parsed verdict.
     pub review_verdict: Option<ReviewVerdict>,
+    /// Per-file changes a write step made to the workspace.
+    pub changes: Vec<FileChange>,
 }
 
 /// The result of executing a whole loop.
@@ -93,7 +101,18 @@ impl LoopRun {
                 ));
             }
             out.push_str(&format!("   - Message: {}\n", first_line(&o.result.message)));
-            if !o.result.changed_files.is_empty() {
+            if !o.changes.is_empty() {
+                for change in &o.changes {
+                    if change.binary {
+                        out.push_str(&format!("   - Changed: {} (binary)\n", change.path));
+                    } else {
+                        out.push_str(&format!(
+                            "   - Changed: {} +{} -{}\n",
+                            change.path, change.added, change.removed
+                        ));
+                    }
+                }
+            } else if !o.result.changed_files.is_empty() {
                 out.push_str(&format!(
                     "   - Changed files: {}\n",
                     o.result.changed_files.join(", ")
@@ -245,7 +264,12 @@ pub fn execute_plan(
         }
 
         let read_only = read_only_for(step.role);
-        let result = if step.role == Role::Verifier && options.verify_command.is_some() {
+        let is_command_verify = step.role == Role::Verifier && options.verify_command.is_some();
+        // For write-capable agent steps, capture content up front so we can diff.
+        let before_content = (!read_only && !is_command_verify)
+            .then(|| content_snapshot(&workspace.workspace_dir));
+
+        let result = if is_command_verify {
             // A real check command stands in for the verifier agent.
             run_verify_command(
                 options.verify_command.as_deref().unwrap(),
@@ -263,7 +287,17 @@ pub fn execute_plan(
             // For write-capable steps, detect file changes by diffing the workspace,
             // since the CLI cannot reliably self-report what it changed.
             let before = (!read_only).then(|| snapshot(&workspace.workspace_dir));
-            let mut result = invoker.invoke(&invocation);
+            let mut events: Vec<LoopEvent> = Vec::new();
+            let mut result = {
+                let mut sink = |event: LoopEvent| {
+                    if let Some(observer) = observer {
+                        observer.on_event(&event);
+                    }
+                    events.push(event);
+                };
+                invoker.invoke_streaming(&invocation, &mut sink)
+            };
+            atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
             if let Some(before) = before
                 && result.changed_files.is_empty()
             {
@@ -275,6 +309,26 @@ pub fn execute_plan(
 
         atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
         atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
+
+        // Turn the workspace changes into per-file diffs for the report and `show`.
+        // Keep only files whose content actually changed, so a no-op revise turn
+        // doesn't overwrite an earlier turn's diff with an empty one.
+        let changes = if let Some(before_content) = &before_content {
+            let real: Vec<FileDiff> = compute_file_diffs(
+                &workspace.workspace_dir,
+                &result.changed_files,
+                before_content,
+            )
+            .into_iter()
+            .filter(|d| d.change.binary || d.change.added + d.change.removed > 0)
+            .collect();
+            if !real.is_empty() {
+                atomic_write(&agent_dir.join("changes.diff"), &render_diffs(&real))?;
+            }
+            real.into_iter().map(|d| d.change).collect()
+        } else {
+            Vec::new()
+        };
 
         // A second implementer turn that follows a review is a revision. If the review
         // raised no blockers it may legitimately make no change; if it raised blockers,
@@ -305,6 +359,7 @@ pub fn execute_plan(
             gate_passed,
             gate_notes,
             review_verdict: None,
+            changes,
         };
         if let Some(observer) = observer {
             observer.on_step_finish(&outcome);
@@ -353,9 +408,14 @@ fn run_reviewer(
         home_dir: home,
         read_only: true,
     };
-    let result = invoker.invoke(&invocation);
+    let mut events: Vec<LoopEvent> = Vec::new();
+    let result = {
+        let mut sink = |event: LoopEvent| events.push(event);
+        invoker.invoke_streaming(&invocation, &mut sink)
+    };
 
     let agent_dir = workspace.agent_dir(step.role, step.adapter);
+    atomic_write(&agent_dir.join("events.jsonl"), &events_to_jsonl(&events))?;
     atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
     atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
 
@@ -372,6 +432,7 @@ fn run_reviewer(
         gate_passed,
         gate_notes,
         review_verdict: Some(verdict),
+        changes: Vec::new(),
     })
 }
 
