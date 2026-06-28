@@ -120,19 +120,19 @@ exercise the real agents manually:
    `LOOPE_CLAUDE_BIN` / `LOOPE_CODEX_BIN` at compatible binaries). By default Loope
    reuses your normal CLI login; pass `--isolate-home` to give each agent a fresh
    config dir instead.
-2. Run with a real verifier and confirmation, e.g. a Claude-only loop:
+2. Run the default **Claude + Codex** loop with a real verifier — one command drives
+   both agents collaboratively:
 
    ```bash
-   loope run --approve manual \
-     --reviewer claude \
-     --verify-cmd "cargo test" \
-     "Add a greeting function"
+   loope run --verify-cmd "cargo test" "Add an add(a, b) function with a test"
    ```
 
-   The implementer and reviewer use `claude`, and the verifier runs `cargo test` in
-   the copied workspace (the gate passes only if it exits 0).
-3. Confirm the prompt, then inspect `.loope/runs/<run-id>/` — each agent's `prompt.md`,
-   `transcript.jsonl`, and `result.md`, plus the final `report.md`.
+   Claude implements and revises, Codex reviews, and `cargo test` runs in the copied
+   workspace (the verify gate passes only if it exits 0). Use `--reviewer claude` for
+   a Claude-only loop when Codex is unavailable, and `--approve manual` to confirm
+   before any agent launches.
+3. Inspect `.loope/runs/<run-id>/` — each agent's `prompt.md`, `transcript.jsonl`, and
+   `result.md`, plus the final `report.md`.
 
 ## SDD artifacts
 

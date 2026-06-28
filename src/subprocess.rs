@@ -110,10 +110,15 @@ fn configure_command(cmd: &mut Command, inv: &AgentInvocation, isolate_home: boo
             }
         }
         Adapter::Codex => {
-            // Non-interactive exec mode.
+            // Non-interactive exec mode; the prompt is read from stdin.
             cmd.arg("exec");
+            // The run workspace is a copied tree, not a git repo.
+            cmd.arg("--skip-git-repo-check");
+            // Read-only steps (reviewer/verifier) cannot write; others may edit.
             if inv.read_only {
                 cmd.args(["--sandbox", "read-only"]);
+            } else {
+                cmd.args(["--sandbox", "workspace-write"]);
             }
             if isolate_home {
                 cmd.env("CODEX_HOME", &inv.home_dir);
