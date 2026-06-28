@@ -67,11 +67,14 @@ loope adapters                               # list supported adapters
 | `--workdir DIR`          | Source directory to run against (default: current directory)     |
 | `--in-place`             | Edit the working directory directly instead of a copied tree     |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`)    |
+| `--preset NAME`          | `claude-codex` \| `codex-claude` \| `claude-solo` \| `dual-review` |
 | `--implementer A`        | Override the implementer adapter (default `claude`)              |
-| `--reviewer A`           | Override the reviewer adapter (default `codex`)                  |
+| `--reviewer A`           | Override the reviewer adapter (single, default `codex`)         |
+| `--reviewers A,B`        | Run several reviewers in parallel and aggregate their verdicts  |
 | `--designer A`           | Override the designer adapter (with `--design`)                 |
 | `--verify-cmd C`         | Run shell command `C` as the verifier; gate passes iff it exits 0 |
 | `--isolate-home`         | Give each agent a private CLI config dir (default: reuse your login) |
+| `--color WHEN`           | `auto` (default), `always`, or `never`                          |
 
 ## How a run executes
 
@@ -101,6 +104,30 @@ loope adapters                               # list supported adapters
 ```
 
 `.loope/` is gitignored, so runs never pollute version control.
+
+## Review orchestration
+
+The review phase is structured and can fan out across agents:
+
+- **Structured verdicts** — each reviewer ends with `VERDICT: PASS` or
+  `VERDICT: BLOCK`, which Loope parses (for Codex, from its `--json` event stream /
+  last-message output). The blocker signal drives the gates: if a review found
+  blockers and the revise turn changes nothing, the loop blocks.
+- **Parallel reviewers** — `--reviewers codex,claude` runs both reviewers
+  concurrently on the same change, each in its own workspace directory, and
+  aggregates their verdicts (any blocker ⇒ blockers present).
+- **Presets** — name a common combination instead of spelling out adapters:
+
+  ```bash
+  loope run --preset dual-review --verify-cmd "cargo test" "Add an endpoint"
+  ```
+
+  | Preset         | Implementer | Reviewers     |
+  | -------------- | ----------- | ------------- |
+  | `claude-codex` | claude      | codex         |
+  | `codex-claude` | codex       | claude        |
+  | `claude-solo`  | claude      | claude        |
+  | `dual-review`  | claude      | codex, claude |
 
 ## Terminal UI
 
@@ -148,6 +175,7 @@ exercise the real agents manually:
 
 - [MVP Spec](docs/specs/2026-06-28-loope-mvp-spec.md)
 - [Agent Integration Spec](docs/specs/2026-06-28-loope-agent-integration-spec.md)
+- [Review Orchestration Spec](docs/specs/2026-06-28-loope-review-orchestration-spec.md)
 - [CLI UX Spec](docs/specs/2026-06-28-loope-cli-ux-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)

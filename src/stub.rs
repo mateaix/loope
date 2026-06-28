@@ -45,8 +45,8 @@ impl Invoker for StubInvoker {
             }
             Role::Reviewer => InvocationResult {
                 success: true,
-                message: "Review (stub): no blocking findings. The change is scoped to the \
-                          requirement and consistent with the available artifacts."
+                message: "Review (stub): the change is scoped to the requirement and \
+                          consistent with the available artifacts.\nVERDICT: PASS"
                     .to_string(),
                 changed_files: Vec::new(),
                 transcript: stub_transcript(inv),
@@ -101,11 +101,11 @@ mod tests {
     }
 
     #[test]
-    fn reviewer_states_no_blocking_findings() {
+    fn reviewer_emits_pass_verdict() {
         let inv = invocation(Role::Reviewer, Adapter::Codex, std::env::temp_dir());
         let result = StubInvoker.invoke(&inv);
         assert!(result.success);
-        assert!(result.message.to_lowercase().contains("no blocking"));
+        assert!(result.message.contains("VERDICT: PASS"));
         assert!(result.changed_files.is_empty());
     }
 

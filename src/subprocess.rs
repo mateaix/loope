@@ -33,9 +33,17 @@ impl Invoker for SubprocessInvoker {
             ));
         };
 
+        // Codex can write its final message verbatim to a file; we read it back for
+        // a reliable, structured message rather than scraping mixed stdout.
+        let codex_output = if inv.adapter == Adapter::Codex {
+            Some(inv.home_dir.join("loope-last-message.txt"))
+        } else {
+            None
+        };
+
         let mut cmd = Command::new(&program);
         cmd.current_dir(&inv.workspace_dir);
-        configure_command(&mut cmd, inv, self.isolate_home);
+        configure_command(&mut cmd, inv, self.isolate_home, codex_output.as_deref());
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -63,11 +71,24 @@ impl Invoker for SubprocessInvoker {
         let success = output.status.success();
 
         let message = if success {
-            let trimmed = stdout.trim();
-            if trimmed.is_empty() {
-                "(no output)".to_string()
-            } else {
-                trimmed.to_string()
+            // Prefer Codex's verbatim last-message file; else the last agent message
+            // from its JSONL event stream; else trimmed stdout.
+            let codex_message = codex_output
+                .as_deref()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| extract_last_agent_message(&stdout));
+            match codex_message {
+                Some(msg) => msg,
+                None => {
+                    let trimmed = stdout.trim();
+                    if trimmed.is_empty() {
+                        "(no output)".to_string()
+                    } else {
+                        trimmed.to_string()
+                    }
+                }
             }
         } else {
             let detail = if stderr.trim().is_empty() {
@@ -75,10 +96,7 @@ impl Invoker for SubprocessInvoker {
             } else {
                 stderr.trim()
             };
-            format!(
-                "exit {}: {detail}",
-                output.status.code().unwrap_or(-1)
-            )
+            format!("exit {}: {detail}", output.status.code().unwrap_or(-1))
         };
 
         InvocationResult {
@@ -94,7 +112,12 @@ impl Invoker for SubprocessInvoker {
 /// adapter. When `isolate_home` is set, the agent's CLI config/home is redirected to
 /// its private run directory; otherwise the user's normal login is reused so the CLI
 /// authenticates.
-fn configure_command(cmd: &mut Command, inv: &AgentInvocation, isolate_home: bool) {
+fn configure_command(
+    cmd: &mut Command,
+    inv: &AgentInvocation,
+    isolate_home: bool,
+    codex_output: Option<&std::path::Path>,
+) {
     match inv.adapter {
         Adapter::Claude => {
             // Print (headless) mode.
@@ -114,6 +137,11 @@ fn configure_command(cmd: &mut Command, inv: &AgentInvocation, isolate_home: boo
             cmd.arg("exec");
             // The run workspace is a copied tree, not a git repo.
             cmd.arg("--skip-git-repo-check");
+            // Structured event stream, plus the final message written verbatim.
+            cmd.arg("--json");
+            if let Some(path) = codex_output {
+                cmd.arg("-o").arg(path);
+            }
             // Read-only steps (reviewer/verifier) cannot write; others may edit.
             if inv.read_only {
                 cmd.args(["--sandbox", "read-only"]);
@@ -130,3 +158,79 @@ fn configure_command(cmd: &mut Command, inv: &AgentInvocation, isolate_home: boo
         Adapter::Generic => {}
     }
 }
+
+/// Extract the last agent message from a Codex `--json` (JSONL) event stream.
+/// Each agent message arrives as an object containing `"type":"agent_message"` and a
+/// `"text"` field. Returns the text of the last such message, if any.
+fn extract_last_agent_message(jsonl: &str) -> Option<String> {
+    let mut last = None;
+    for line in jsonl.lines() {
+        if line.contains("\"type\":\"agent_message\"")
+            && let Some(text) = extract_json_string_field(line, "text")
+        {
+            last = Some(text);
+        }
+    }
+    last
+}
+
+/// Extract a JSON string field value from a single JSON line, handling the common
+/// escape sequences. Minimal on purpose (no serde dependency).
+fn extract_json_string_field(line: &str, field: &str) -> Option<String> {
+    let key = format!("\"{field}\":\"");
+    let start = line.find(&key)? + key.len();
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in line[start..].chars() {
+        if escaped {
+            match c {
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                other => out.push(other),
+            }
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_last_agent_message_from_jsonl() {
+        let jsonl = concat!(
+            "{\"type\":\"thread.started\",\"thread_id\":\"x\"}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"aggregated_output\":\"noise\"}}\n",
+            "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"VERDICT: PASS\"}}\n",
+            "{\"type\":\"turn.completed\"}\n"
+        );
+        assert_eq!(
+            extract_last_agent_message(jsonl).as_deref(),
+            Some("VERDICT: PASS")
+        );
+    }
+
+    #[test]
+    fn handles_escaped_text() {
+        let line = "{\"type\":\"agent_message\",\"text\":\"line1\\nline2 \\\"quoted\\\"\"}";
+        assert_eq!(
+            extract_last_agent_message(line).as_deref(),
+            Some("line1\nline2 \"quoted\"")
+        );
+    }
+
+    #[test]
+    fn none_when_no_agent_message() {
+        assert_eq!(extract_last_agent_message("{\"type\":\"turn.started\"}"), None);
+    }
+}
+

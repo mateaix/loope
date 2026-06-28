@@ -66,8 +66,10 @@ fn cmd_run(args: &mut Vec<String>) {
     let approve = remove_value(args, "--approve").unwrap_or_else(|| "auto".to_string());
     let workdir = remove_value(args, "--workdir");
     let verify_command = remove_value(args, "--verify-cmd");
+    let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
+    let reviewers_list = remove_value(args, "--reviewers");
     let designer = remove_adapter(args, "--designer");
     let requirement = args.join(" ");
 
@@ -88,15 +90,23 @@ fn cmd_run(args: &mut Vec<String>) {
     }
     let base = cwd.join(".loope").join("runs");
 
-    let defaults = LoopOptions::default();
+    // Start from the preset (or defaults), then let explicit flags override it.
+    let base_options = preset_options(preset.as_deref());
+    let reviewers = if let Some(list) = reviewers_list {
+        parse_reviewers(&list)
+    } else if let Some(single) = reviewer {
+        vec![single]
+    } else {
+        base_options.reviewers
+    };
     let plan = generate_plan(
         &requirement,
         LoopOptions {
             include_design,
-            implementer: implementer.unwrap_or(defaults.implementer),
-            reviewer: reviewer.unwrap_or(defaults.reviewer),
-            designer: designer.unwrap_or(defaults.designer),
-            verifier: defaults.verifier,
+            implementer: implementer.unwrap_or(base_options.implementer),
+            reviewers,
+            designer: designer.unwrap_or(base_options.designer),
+            verifier: base_options.verifier,
         },
     );
 
@@ -118,7 +128,7 @@ fn cmd_run(args: &mut Vec<String>) {
         }
     };
 
-    let invoker: Box<dyn Invoker> = if dry_run {
+    let invoker: Box<dyn Invoker + Sync> = if dry_run {
         Box::new(StubInvoker)
     } else {
         Box::new(SubprocessInvoker { isolate_home })
@@ -250,6 +260,63 @@ fn remove_value(args: &mut Vec<String>, flag: &str) -> Option<String> {
     }
 }
 
+/// Expand a `--preset` name to base options, exiting on an unknown name.
+fn preset_options(preset: Option<&str>) -> LoopOptions {
+    let Some(name) = preset else {
+        return LoopOptions::default();
+    };
+    let reviewers = |adapters: &[Adapter]| adapters.to_vec();
+    match name.trim().to_ascii_lowercase().as_str() {
+        "claude-codex" => LoopOptions {
+            implementer: Adapter::Claude,
+            reviewers: reviewers(&[Adapter::Codex]),
+            ..LoopOptions::default()
+        },
+        "codex-claude" => LoopOptions {
+            implementer: Adapter::Codex,
+            reviewers: reviewers(&[Adapter::Claude]),
+            ..LoopOptions::default()
+        },
+        "claude-solo" => LoopOptions {
+            implementer: Adapter::Claude,
+            reviewers: reviewers(&[Adapter::Claude]),
+            ..LoopOptions::default()
+        },
+        "dual-review" => LoopOptions {
+            implementer: Adapter::Claude,
+            reviewers: reviewers(&[Adapter::Codex, Adapter::Claude]),
+            ..LoopOptions::default()
+        },
+        other => {
+            eprintln!(
+                "unknown preset: {other} (try claude-codex, codex-claude, claude-solo, dual-review)"
+            );
+            process::exit(2);
+        }
+    }
+}
+
+/// Parse a comma-separated reviewer list, exiting on an unknown or empty entry.
+fn parse_reviewers(list: &str) -> Vec<Adapter> {
+    let reviewers: Vec<Adapter> = list
+        .split(',')
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(|item| match Adapter::parse(item) {
+            Some(adapter) => adapter,
+            None => {
+                eprintln!("unknown reviewer adapter: {item}");
+                process::exit(2);
+            }
+        })
+        .collect();
+    if reviewers.is_empty() {
+        eprintln!("--reviewers needs at least one adapter, e.g. --reviewers codex,claude");
+        process::exit(2);
+    }
+    reviewers
+}
+
 /// Remove `--flag <adapter>` and parse it, exiting on an unknown adapter name.
 fn remove_adapter(args: &mut Vec<String>, flag: &str) -> Option<Adapter> {
     let value = remove_value(args, flag)?;
@@ -286,8 +353,10 @@ run flags:
   --in-place      Operate on the working directory directly instead of a copied tree.
   --workdir DIR   Source directory to run against (default: current directory).
   --approve MODE  'auto' (default) or 'manual' (confirm before launching agents).
+  --preset NAME   claude-codex | codex-claude | claude-solo | dual-review.
   --implementer A Override the implementer adapter (claude|codex|opencode|generic).
-  --reviewer A    Override the reviewer adapter.
+  --reviewer A    Override the reviewer adapter (single).
+  --reviewers A,B Run several reviewers in parallel and aggregate verdicts.
   --designer A    Override the designer adapter (with --design).
   --verify-cmd C  Run shell command C as the verifier (gate passes iff it exits 0).
   --isolate-home  Give each agent a private CLI config dir (default: reuse your login).

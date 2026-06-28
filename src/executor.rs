@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::adapter::{AgentInvocation, InvocationResult, Invoker};
+use crate::review::{ReviewVerdict, parse_review_verdict};
 use crate::workspace::{RunWorkspace, atomic_write, changed_files, snapshot};
 use crate::{Adapter, LoopPlan, Role, prompt_for_step};
 
@@ -36,6 +37,8 @@ pub struct StepOutcome {
     pub gate: String,
     pub gate_passed: bool,
     pub gate_notes: String,
+    /// For reviewer steps, the parsed verdict.
+    pub review_verdict: Option<ReviewVerdict>,
 }
 
 /// The result of executing a whole loop.
@@ -82,6 +85,13 @@ impl LoopRun {
             ));
             out.push_str(&format!("   - Gate: {}\n", o.gate));
             out.push_str(&format!("   - Gate result: {}\n", o.gate_notes));
+            if let Some(verdict) = &o.review_verdict {
+                out.push_str(&format!(
+                    "   - Verdict: {} ({})\n",
+                    verdict.label(),
+                    verdict.summary
+                ));
+            }
             out.push_str(&format!("   - Message: {}\n", first_line(&o.result.message)));
             if !o.result.changed_files.is_empty() {
                 out.push_str(&format!(
@@ -128,7 +138,7 @@ impl LoopRun {
 pub fn execute_plan(
     plan: &LoopPlan,
     workspace: &RunWorkspace,
-    invoker: &dyn Invoker,
+    invoker: &(dyn Invoker + Sync),
     options: &ExecuteOptions,
     observer: Option<&dyn StepObserver>,
 ) -> io::Result<LoopRun> {
@@ -141,8 +151,82 @@ pub fn execute_plan(
     let mut last_implementer_message: Option<String> = None;
     let mut last_implementer_files: Vec<String> = Vec::new();
     let mut last_review_message: Option<String> = None;
+    let mut review_blockers_pending = false;
 
-    for step in &plan.steps {
+    let steps = &plan.steps;
+    let mut i = 0;
+    while i < steps.len() {
+        // A maximal run of consecutive reviewer steps forms one review phase that runs
+        // its reviewers concurrently and aggregates their verdicts.
+        if steps[i].role == Role::Reviewer {
+            let start = i;
+            while i < steps.len() && steps[i].role == Role::Reviewer {
+                i += 1;
+            }
+            let group = &steps[start..i];
+
+            let prompts: Vec<String> = group
+                .iter()
+                .map(|s| {
+                    build_prompt(
+                        s.role,
+                        &plan.requirement,
+                        s,
+                        last_implementer_message.as_deref(),
+                        &last_implementer_files,
+                        last_review_message.as_deref(),
+                    )
+                })
+                .collect();
+            for (s, prompt) in group.iter().zip(&prompts) {
+                workspace.agent_home(s.role, s.adapter)?;
+                atomic_write(&workspace.agent_dir(s.role, s.adapter).join("prompt.md"), prompt)?;
+            }
+
+            let group_outcomes = if group.len() == 1 {
+                if let Some(observer) = observer {
+                    observer.on_step_start(&group[0]);
+                }
+                vec![run_reviewer(workspace, &group[0], &prompts[0], invoker)?]
+            } else {
+                run_reviewers_parallel(workspace, group, &prompts, invoker)?
+            };
+
+            // Aggregate: any reviewer with blockers means blockers are pending.
+            review_blockers_pending = false;
+            let mut summaries = Vec::new();
+            let mut group_halt = false;
+            for outcome in group_outcomes {
+                if let Some(verdict) = &outcome.review_verdict {
+                    if verdict.has_blockers {
+                        review_blockers_pending = true;
+                    }
+                    summaries.push(format!(
+                        "{} ({}): {}",
+                        outcome.adapter.display_name(),
+                        verdict.label(),
+                        verdict.summary
+                    ));
+                }
+                if !outcome.gate_passed {
+                    group_halt = true;
+                }
+                if let Some(observer) = observer {
+                    observer.on_step_finish(&outcome);
+                }
+                outcomes.push(outcome);
+            }
+            last_review_message = Some(format!("Reviews:\n{}", summaries.join("\n")));
+            if group_halt {
+                halted = true;
+                break;
+            }
+            continue;
+        }
+
+        let step = &steps[i];
+        i += 1;
+
         let prompt = build_prompt(
             step.role,
             &plan.requirement,
@@ -192,22 +276,23 @@ pub fn execute_plan(
         atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
         atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
 
-        // A second implementer turn that follows a review is a revision: if the
-        // review raised no blockers there may be nothing to change, so it is not
-        // required to touch files.
+        // A second implementer turn that follows a review is a revision. If the review
+        // raised no blockers it may legitimately make no change; if it raised blockers,
+        // a no-op revise turn means they were not addressed.
         let is_revision = step.role == Role::Implementer && last_review_message.is_some();
-        let (gate_passed, gate_notes) = evaluate_gate(step.role, &result, is_revision);
+        let (gate_passed, gate_notes) =
+            evaluate_gate(step.role, &result, is_revision, review_blockers_pending);
 
         // Record artifacts for downstream steps before moving `result`.
-        match step.role {
-            Role::Implementer => {
-                last_implementer_message = Some(result.message.clone());
-                if !result.changed_files.is_empty() {
-                    last_implementer_files = result.changed_files.clone();
+        if step.role == Role::Implementer {
+            last_implementer_message = Some(result.message.clone());
+            if !result.changed_files.is_empty() {
+                last_implementer_files = result.changed_files.clone();
+                if is_revision {
+                    // Blockers addressed once a revise turn produced a change.
+                    review_blockers_pending = false;
                 }
             }
-            Role::Reviewer => last_review_message = Some(result.message.clone()),
-            _ => {}
         }
 
         let outcome = StepOutcome {
@@ -219,6 +304,7 @@ pub fn execute_plan(
             gate: step.gate.clone(),
             gate_passed,
             gate_notes,
+            review_verdict: None,
         };
         if let Some(observer) = observer {
             observer.on_step_finish(&outcome);
@@ -247,6 +333,71 @@ pub fn execute_plan(
 /// Reviewer and verifier never write; designer and implementer may.
 fn read_only_for(role: Role) -> bool {
     matches!(role, Role::Reviewer | Role::Verifier)
+}
+
+/// Run a single reviewer step (read-only), persist its artifacts, and parse its
+/// verdict. A review is always a valid artifact, so the gate passes; the verdict
+/// carries the blocker signal.
+fn run_reviewer(
+    workspace: &RunWorkspace,
+    step: &crate::LoopStep,
+    prompt: &str,
+    invoker: &dyn Invoker,
+) -> io::Result<StepOutcome> {
+    let home = workspace.agent_home(step.role, step.adapter)?;
+    let invocation = AgentInvocation {
+        adapter: step.adapter,
+        role: step.role,
+        prompt: prompt.to_string(),
+        workspace_dir: workspace.workspace_dir.clone(),
+        home_dir: home,
+        read_only: true,
+    };
+    let result = invoker.invoke(&invocation);
+
+    let agent_dir = workspace.agent_dir(step.role, step.adapter);
+    atomic_write(&agent_dir.join("transcript.jsonl"), &result.transcript)?;
+    atomic_write(&agent_dir.join("result.md"), &render_result(&result))?;
+
+    let verdict = parse_review_verdict(&result.message);
+    let (gate_passed, gate_notes) = evaluate_gate(Role::Reviewer, &result, false, false);
+
+    Ok(StepOutcome {
+        step_id: step.id,
+        role: step.role,
+        adapter: step.adapter,
+        prompt: prompt.to_string(),
+        result,
+        gate: step.gate.clone(),
+        gate_passed,
+        gate_notes,
+        review_verdict: Some(verdict),
+    })
+}
+
+/// Run several reviewers concurrently, one scoped thread each. Reviewers are
+/// read-only and write to separate per-adapter directories, so there is no contention.
+fn run_reviewers_parallel(
+    workspace: &RunWorkspace,
+    group: &[crate::LoopStep],
+    prompts: &[String],
+    invoker: &(dyn Invoker + Sync),
+) -> io::Result<Vec<StepOutcome>> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = group
+            .iter()
+            .zip(prompts)
+            .map(|(step, prompt)| scope.spawn(move || run_reviewer(workspace, step, prompt, invoker)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(io::Error::other("reviewer thread panicked"))
+                })
+            })
+            .collect()
+    })
 }
 
 /// Run a real shell check command in the workspace as the verifier step.
@@ -326,9 +477,15 @@ fn build_prompt(
     prompt
 }
 
-/// Evaluate a step's gate against its real result. `is_revision` marks an
-/// implementer turn that follows a review (where making no change can be correct).
-fn evaluate_gate(role: Role, result: &InvocationResult, is_revision: bool) -> (bool, String) {
+/// Evaluate a step's gate against its real result. `is_revision` marks an implementer
+/// turn that follows a review; `blockers_pending` is true when the review found
+/// blocking issues that the revise turn is expected to address.
+fn evaluate_gate(
+    role: Role,
+    result: &InvocationResult,
+    is_revision: bool,
+    blockers_pending: bool,
+) -> (bool, String) {
     if !result.success {
         return (false, "invocation failed".to_string());
     }
@@ -337,14 +494,21 @@ fn evaluate_gate(role: Role, result: &InvocationResult, is_revision: bool) -> (b
     }
     match role {
         Role::Implementer => {
-            if result.changed_files.is_empty() {
-                if is_revision {
-                    (true, "no revision needed".to_string())
+            if !result.changed_files.is_empty() {
+                let notes = if is_revision {
+                    "revision addressed review"
                 } else {
-                    (false, "implementer reported no change".to_string())
+                    "scoped change produced"
+                };
+                (true, notes.to_string())
+            } else if is_revision {
+                if blockers_pending {
+                    (false, "blocking review findings not addressed".to_string())
+                } else {
+                    (true, "no revision needed".to_string())
                 }
             } else {
-                (true, "scoped change produced".to_string())
+                (false, "implementer reported no change".to_string())
             }
         }
         Role::Designer => (true, "design contract produced".to_string()),
@@ -399,7 +563,8 @@ mod tests {
     use crate::stub::StubInvoker;
     use crate::workspace::RunWorkspace;
     use crate::{LoopOptions, generate_plan};
-    use std::cell::RefCell;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::fs;
     use std::path::PathBuf;
 
@@ -462,17 +627,200 @@ mod tests {
 
     /// An invoker that fails the reviewer step to exercise the blocking-gate halt.
     struct FailReviewerInvoker {
-        seen: RefCell<Vec<Role>>,
+        seen: Mutex<Vec<Role>>,
     }
 
     impl Invoker for FailReviewerInvoker {
         fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
-            self.seen.borrow_mut().push(inv.role);
+            self.seen.lock().unwrap().push(inv.role);
             if inv.role == Role::Reviewer {
                 return InvocationResult::failure("reviewer could not run");
             }
             StubInvoker.invoke(inv)
         }
+    }
+
+    /// Reviewer flags blockers; the implementer's revise turn makes no change.
+    struct BlockNoFixInvoker {
+        implementer_calls: AtomicUsize,
+    }
+
+    impl Invoker for BlockNoFixInvoker {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            match inv.role {
+                Role::Reviewer => InvocationResult {
+                    success: true,
+                    message: "A blocking issue exists.\nVERDICT: BLOCK".to_string(),
+                    changed_files: Vec::new(),
+                    transcript: String::new(),
+                },
+                Role::Implementer => {
+                    let calls = self.implementer_calls.fetch_add(1, Ordering::Relaxed);
+                    if calls == 0 {
+                        StubInvoker.invoke(inv)
+                    } else {
+                        InvocationResult {
+                            success: true,
+                            message: "I did not change anything.".to_string(),
+                            changed_files: Vec::new(),
+                            transcript: String::new(),
+                        }
+                    }
+                }
+                _ => StubInvoker.invoke(inv),
+            }
+        }
+    }
+
+    #[test]
+    fn revise_blocks_when_blockers_not_addressed() {
+        let base = temp_base("block-nofix");
+        let source = temp_base("block-nofix-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let invoker = BlockNoFixInvoker {
+            implementer_calls: AtomicUsize::new(0),
+        };
+        let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
+
+        // reviewer recorded blockers
+        let reviewer = &run.outcomes[1];
+        assert_eq!(reviewer.role, Role::Reviewer);
+        assert!(reviewer.review_verdict.as_ref().unwrap().has_blockers);
+        // revise turn made no change while blockers were pending -> blocked
+        assert!(run.halted);
+        let revise = &run.outcomes[2];
+        assert!(!revise.gate_passed);
+        assert_eq!(revise.gate_notes, "blocking review findings not addressed");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    /// Reviewer flags blockers; the implementer's revise turn makes a change (stub
+    /// implementer always writes a file), so the loop proceeds.
+    struct BlockThenFixInvoker;
+
+    impl Invoker for BlockThenFixInvoker {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            if inv.role == Role::Reviewer {
+                return InvocationResult {
+                    success: true,
+                    message: "Fix needed.\nVERDICT: BLOCK".to_string(),
+                    changed_files: Vec::new(),
+                    transcript: String::new(),
+                };
+            }
+            StubInvoker.invoke(inv)
+        }
+    }
+
+    #[test]
+    fn revise_passes_when_blockers_addressed() {
+        let base = temp_base("block-fix");
+        let source = temp_base("block-fix-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let run =
+            execute_plan(&plan, &ws, &BlockThenFixInvoker, &ExecuteOptions::default(), None).unwrap();
+
+        assert!(run.all_passed());
+        let revise = &run.outcomes[2];
+        assert!(revise.gate_passed);
+        assert_eq!(revise.gate_notes, "revision addressed review");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    /// Reviewer that emits BLOCK for Codex and PASS for Claude, to check aggregation.
+    struct PerAdapterReviewInvoker;
+
+    impl Invoker for PerAdapterReviewInvoker {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            if inv.role == Role::Reviewer {
+                let verdict = if inv.adapter == Adapter::Codex {
+                    "VERDICT: BLOCK"
+                } else {
+                    "VERDICT: PASS"
+                };
+                return InvocationResult {
+                    success: true,
+                    message: format!("Review from {}.\n{verdict}", inv.adapter.display_name()),
+                    changed_files: Vec::new(),
+                    transcript: String::new(),
+                };
+            }
+            StubInvoker.invoke(inv)
+        }
+    }
+
+    #[test]
+    fn two_reviewers_run_and_aggregate() {
+        let base = temp_base("multi");
+        let source = temp_base("multi-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan(
+            "Add login",
+            LoopOptions {
+                reviewers: vec![Adapter::Codex, Adapter::Claude],
+                ..LoopOptions::default()
+            },
+        );
+
+        let run = execute_plan(
+            &plan,
+            &ws,
+            &PerAdapterReviewInvoker,
+            &ExecuteOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        // both reviewers produced artifacts and verdicts
+        let reviewers: Vec<&StepOutcome> = run
+            .outcomes
+            .iter()
+            .filter(|o| o.role == Role::Reviewer)
+            .collect();
+        assert_eq!(reviewers.len(), 2);
+        assert!(
+            ws.agent_dir(Role::Reviewer, Adapter::Codex)
+                .join("result.md")
+                .exists()
+        );
+        assert!(
+            ws.agent_dir(Role::Reviewer, Adapter::Claude)
+                .join("result.md")
+                .exists()
+        );
+        // Codex blocked; aggregation marks blockers pending, so the stub revise turn
+        // (which writes a file) addresses them and the loop still passes.
+        let codex = reviewers.iter().find(|o| o.adapter == Adapter::Codex).unwrap();
+        assert!(codex.review_verdict.as_ref().unwrap().has_blockers);
+        assert!(run.all_passed());
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
+    }
+
+    #[test]
+    fn reviewer_outcome_carries_pass_verdict() {
+        let base = temp_base("verdict");
+        let source = temp_base("verdict-src");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let plan = generate_plan("Add login", LoopOptions::default());
+
+        let run = execute_plan(&plan, &ws, &StubInvoker, &ExecuteOptions::default(), None).unwrap();
+        let reviewer = &run.outcomes[1];
+        let verdict = reviewer.review_verdict.as_ref().unwrap();
+        assert!(!verdict.has_blockers);
+        assert_eq!(verdict.label(), "PASS");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&source);
     }
 
     #[test]
@@ -522,15 +870,14 @@ mod tests {
     /// Implementer changes a file on the first turn but makes no change on the
     /// revise turn (nothing to fix). The reviewer/verifier defer to the stub.
     struct NoRevisionInvoker {
-        implementer_calls: RefCell<usize>,
+        implementer_calls: AtomicUsize,
     }
 
     impl Invoker for NoRevisionInvoker {
         fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
             if inv.role == Role::Implementer {
-                let mut calls = self.implementer_calls.borrow_mut();
-                *calls += 1;
-                if *calls == 1 {
+                let calls = self.implementer_calls.fetch_add(1, Ordering::Relaxed);
+                if calls == 0 {
                     return StubInvoker.invoke(inv); // first turn writes a file
                 }
                 // revise turn: nothing to change
@@ -553,7 +900,7 @@ mod tests {
         let plan = generate_plan("Add login", LoopOptions::default());
 
         let invoker = NoRevisionInvoker {
-            implementer_calls: RefCell::new(0),
+            implementer_calls: AtomicUsize::new(0),
         };
         let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
 
@@ -575,14 +922,14 @@ mod tests {
         let plan = generate_plan("Add login", LoopOptions::default());
 
         let invoker = FailReviewerInvoker {
-            seen: RefCell::new(Vec::new()),
+            seen: Mutex::new(Vec::new()),
         };
         let run = execute_plan(&plan, &ws, &invoker, &ExecuteOptions::default(), None).unwrap();
 
         assert!(run.halted);
         assert!(!run.all_passed());
         // implementer + reviewer ran; the loop stopped before the revise step
-        let seen = invoker.seen.borrow();
+        let seen = invoker.seen.lock().unwrap();
         assert_eq!(seen.as_slice(), &[Role::Implementer, Role::Reviewer]);
         let report = fs::read_to_string(ws.root.join("report.md")).unwrap();
         assert!(report.contains("halted on a blocking gate"));

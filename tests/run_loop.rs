@@ -146,6 +146,52 @@ fn run_ids_increment_across_runs() {
 }
 
 #[test]
+fn multiple_reviewers_each_get_a_step() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("multirev");
+
+    let output = Command::new(exe)
+        .args(["run", "--dry-run", "--reviewers", "codex,claude", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("reviewer via Codex"));
+    assert!(stdout.contains("reviewer via Claude"));
+
+    let agents = cwd
+        .join(".loope")
+        .join("runs")
+        .join("run-0001")
+        .join("agents");
+    assert!(agents.join("reviewer-codex").join("result.md").exists());
+    assert!(agents.join("reviewer-claude").join("result.md").exists());
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn preset_dual_review_runs_two_reviewers() {
+    let exe = env!("CARGO_BIN_EXE_loope");
+    let cwd = temp_dir("preset");
+
+    let output = Command::new(exe)
+        .args(["run", "--dry-run", "--preset", "dual-review", "Add login"])
+        .current_dir(&cwd)
+        .output()
+        .expect("run loope");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("reviewer via Codex"));
+    assert!(stdout.contains("reviewer via Claude"));
+
+    let _ = fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn run_requires_a_requirement() {
     let exe = env!("CARGO_BIN_EXE_loope");
     let cwd = temp_dir("norq");

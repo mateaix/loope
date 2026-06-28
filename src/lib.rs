@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod executor;
+pub mod review;
 pub mod stub;
 pub mod subprocess;
 pub mod workspace;
@@ -66,7 +67,8 @@ impl Role {
 pub struct LoopOptions {
     pub include_design: bool,
     pub implementer: Adapter,
-    pub reviewer: Adapter,
+    /// One reviewer step is generated per adapter; multiple reviewers run in parallel.
+    pub reviewers: Vec<Adapter>,
     pub designer: Adapter,
     pub verifier: Adapter,
 }
@@ -76,7 +78,7 @@ impl Default for LoopOptions {
         Self {
             include_design: false,
             implementer: Adapter::Claude,
-            reviewer: Adapter::Codex,
+            reviewers: vec![Adapter::Codex],
             designer: Adapter::Generic,
             verifier: Adapter::Generic,
         }
@@ -174,17 +176,25 @@ pub fn generate_plan(requirement: &str, options: LoopOptions) -> LoopPlan {
             .to_string(),
     });
 
-    steps.push(LoopStep {
-        id: steps.len() + 1,
-        role: Role::Reviewer,
-        adapter: options.reviewer,
-        objective: format!(
-            "{} reviews correctness, regressions, and consistency",
-            options.reviewer.display_name()
-        ),
-        expected_artifact: "review report with blocking findings first".to_string(),
-        gate: "review must identify blockers or explicitly state no blocking findings".to_string(),
-    });
+    let reviewers = if options.reviewers.is_empty() {
+        vec![Adapter::Codex]
+    } else {
+        options.reviewers.clone()
+    };
+    for reviewer in reviewers {
+        steps.push(LoopStep {
+            id: steps.len() + 1,
+            role: Role::Reviewer,
+            adapter: reviewer,
+            objective: format!(
+                "{} reviews correctness, regressions, and consistency",
+                reviewer.display_name()
+            ),
+            expected_artifact: "review report with blocking findings first".to_string(),
+            gate: "review must identify blockers or explicitly state no blocking findings"
+                .to_string(),
+        });
+    }
 
     steps.push(LoopStep {
         id: steps.len() + 1,
@@ -231,7 +241,7 @@ pub(crate) fn prompt_for_step(step: &LoopStep, requirement: &str) -> String {
             requirement
         ),
         Role::Reviewer => format!(
-            "You are the review agent using {}. Review the implementation for bugs, regressions, missing tests, and design consistency.\n\nRequirement:\n{}\n\nPut blocking findings first.",
+            "You are the review agent using {}. Review the implementation for bugs, regressions, missing tests, and design consistency.\n\nRequirement:\n{}\n\nPut blocking findings first. End your review with a single final line that is exactly `VERDICT: PASS` if there are no blocking issues, or `VERDICT: BLOCK` if one or more blocking issues must be fixed.",
             step.adapter.display_name(),
             requirement
         ),
