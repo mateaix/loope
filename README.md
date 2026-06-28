@@ -37,6 +37,13 @@ requirement
   -> verifier checks against the contract
 ```
 
+## Documentation
+
+The complete usage reference — every command, flag, preset, adapter, the run directory,
+the terminal UI, exit codes, environment variables, and troubleshooting — is in
+**[docs/guide/usage.md](docs/guide/usage.md)**. See the [docs index](docs/README.md) for
+the full documentation layout.
+
 ## Quick start
 
 ```bash
