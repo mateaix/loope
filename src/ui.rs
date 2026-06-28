@@ -7,7 +7,7 @@
 
 use std::io::{IsTerminal, Write, stdout};
 
-use loope::executor::{LoopRun, StepObserver, StepOutcome};
+use loope::executor::{StepObserver, StepOutcome};
 use loope::{Adapter, LoopPlan, LoopStep, Role};
 
 const RESET: &str = "\x1b[0m";
@@ -141,31 +141,141 @@ impl StepObserver for PrettyObserver {
     }
 }
 
-/// Final summary box, colored by outcome.
-pub fn summary(run: &LoopRun, run_dir: &std::path::Path, color: bool) {
-    let outcome = if run.all_passed() {
-        "all gates passed"
-    } else if run.halted {
-        "halted on a blocking gate"
-    } else {
-        "completed with gate failures"
-    };
-
+/// Render a Loope report. In plain mode the markdown is printed verbatim (so piping
+/// and tests are unchanged); in color mode it becomes a summary box plus a colored
+/// per-step recap. Used by both `run` (final output) and `show`.
+pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
     if !color {
-        println!("\n{}", run.to_report_markdown());
-        println!("\nRun directory: {}", run_dir.display());
+        print!("{md}");
+        if !md.ends_with('\n') {
+            println!();
+        }
+        if let Some(dir) = run_dir {
+            println!("\nRun directory: {}", dir.display());
+        }
         return;
     }
 
-    let (r, g, b) = if run.all_passed() { GREEN } else { RED };
+    let mut run_id = String::new();
+    let mut outcome = String::new();
+    for line in md.lines() {
+        if let Some(value) = line.strip_prefix("- Run: ") {
+            run_id = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("- Outcome: ") {
+            outcome = value.trim().to_string();
+        }
+    }
+
+    let passed = outcome.contains("all gates passed");
+    let accent = if passed { GREEN } else { RED };
+    let title = format!(
+        "∞ {} · {}",
+        if run_id.is_empty() { "run" } else { &run_id },
+        outcome
+    );
+    print_box(&title, accent);
+
+    for step in parse_steps(md) {
+        let (sr, sg, sb) = if step.passed { GREEN } else { RED };
+        let icon = if step.passed { "✓" } else { "✗" };
+        let mut note = step.gate_result;
+        if let Some(verdict) = step.verdict {
+            note = if note.is_empty() {
+                verdict
+            } else {
+                format!("{note} · {verdict}")
+            };
+        }
+        println!(
+            "  {sc}{icon}{RESET} {DIM}{num}{RESET} {role:<11} {DIM}·{RESET} {ac}{adapter}{RESET}  {DIM}{note}{RESET}",
+            sc = fg(sr, sg, sb),
+            num = step.num,
+            role = step.role,
+            ac = adapter_color_by_name(&step.adapter),
+            adapter = step.adapter,
+        );
+    }
+
+    if let Some(dir) = run_dir {
+        println!("  {DIM}run dir: {}{RESET}", dir.display());
+    }
+}
+
+/// Draw a single-line title in a colored box.
+fn print_box(title: &str, (r, g, b): (u8, u8, u8)) {
     let accent = fg(r, g, b);
-    let title = format!("∞ {} · {}", run.run_id, outcome);
     let width = title.chars().count();
     let bar = "─".repeat(width + 2);
     println!("\n  {accent}╭{bar}╮{RESET}");
     println!("  {accent}│ {BOLD}{title}{RESET}{accent} │{RESET}");
     println!("  {accent}╰{bar}╯{RESET}");
-    println!("  {DIM}run dir: {}{RESET}", run_dir.display());
+}
+
+/// One step parsed from a report for the colored recap.
+struct StepLine {
+    num: String,
+    role: String,
+    adapter: String,
+    passed: bool,
+    gate_result: String,
+    verdict: Option<String>,
+}
+
+/// Parse the `## Steps` section of a Loope report markdown.
+fn parse_steps(md: &str) -> Vec<StepLine> {
+    let mut steps: Vec<StepLine> = Vec::new();
+    let mut current: Option<StepLine> = None;
+    for line in md.lines() {
+        if let Some((num, role, adapter, passed)) = parse_step_header(line) {
+            if let Some(step) = current.take() {
+                steps.push(step);
+            }
+            current = Some(StepLine {
+                num,
+                role,
+                adapter,
+                passed,
+                gate_result: String::new(),
+                verdict: None,
+            });
+        } else if let Some(step) = current.as_mut() {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("- Gate result: ") {
+                step.gate_result = value.trim().to_string();
+            } else if let Some(value) = trimmed.strip_prefix("- Verdict: ") {
+                step.verdict = Some(value.trim().to_string());
+            }
+        }
+    }
+    if let Some(step) = current.take() {
+        steps.push(step);
+    }
+    steps
+}
+
+/// Parse a step header line like `1. **implementer via Claude** — PASS`.
+fn parse_step_header(line: &str) -> Option<(String, String, String, bool)> {
+    let (num, rest) = line.split_once(". **")?;
+    if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let (mid, status) = rest.split_once("** — ")?;
+    let (role, adapter) = mid.split_once(" via ")?;
+    let passed = status.trim() == "PASS";
+    Some((
+        num.to_string(),
+        role.to_string(),
+        adapter.to_string(),
+        passed,
+    ))
+}
+
+/// Color for an adapter named by its display name (e.g. "Claude").
+fn adapter_color_by_name(name: &str) -> String {
+    match Adapter::parse(&name.to_lowercase()) {
+        Some(adapter) => adapter_color(adapter),
+        None => fg(150, 150, 150),
+    }
 }
 
 /// Render the `runs` listing.
@@ -179,5 +289,36 @@ pub fn runs_list(ids: &[String], color: bool) {
     let blue = fg(28, 155, 240);
     for id in ids {
         println!("  {blue}∞{RESET} {id}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_step_header() {
+        let parsed = parse_step_header("2. **reviewer via Codex** — PASS").unwrap();
+        assert_eq!(parsed, ("2".into(), "reviewer".into(), "Codex".into(), true));
+        let blocked = parse_step_header("3. **implementer via Claude** — BLOCK").unwrap();
+        assert!(!blocked.3);
+        assert!(parse_step_header("   - Gate: something").is_none());
+        assert!(parse_step_header("# Loope Run Report").is_none());
+    }
+
+    #[test]
+    fn parses_steps_with_gate_result_and_verdict() {
+        let md = "## Steps\n\n\
+            1. **implementer via Claude** — PASS\n\
+            \u{20}  - Gate result: scoped change produced\n\
+            2. **reviewer via Codex** — PASS\n\
+            \u{20}  - Gate result: review produced\n\
+            \u{20}  - Verdict: PASS (no blocking findings)\n";
+        let steps = parse_steps(md);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].role, "implementer");
+        assert_eq!(steps[0].gate_result, "scoped change produced");
+        assert_eq!(steps[1].adapter, "Codex");
+        assert_eq!(steps[1].verdict.as_deref(), Some("PASS (no blocking findings)"));
     }
 }

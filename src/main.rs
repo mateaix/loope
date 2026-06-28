@@ -25,7 +25,7 @@ fn main() {
         "plan" => cmd_plan(&mut args),
         "run" => cmd_run(&mut args),
         "runs" => cmd_runs(),
-        "show" => cmd_show(&args),
+        "show" => cmd_show(&mut args),
         "adapters" => {
             for adapter in list_adapters() {
                 println!("{}", adapter.as_str());
@@ -144,7 +144,7 @@ fn cmd_run(args: &mut Vec<String>) {
         }
     };
 
-    ui::summary(&run, &workspace.root, color);
+    ui::print_report(&run.to_report_markdown(), Some(&workspace.root), color);
 
     if !run.all_passed() {
         process::exit(1);
@@ -169,19 +169,17 @@ fn cmd_runs() {
     ui::runs_list(&ids, ColorChoice::Auto.enabled());
 }
 
-fn cmd_show(args: &[String]) {
+fn cmd_show(args: &mut Vec<String>) {
+    let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     let Some(run_id) = args.first() else {
         eprintln!("loope show requires a run id, e.g. loope show run-0001");
         process::exit(2);
     };
     let cwd = current_dir_or_exit();
-    let report = cwd
-        .join(".loope")
-        .join("runs")
-        .join(run_id)
-        .join("report.md");
+    let run_dir = cwd.join(".loope").join("runs").join(run_id);
+    let report = run_dir.join("report.md");
     match fs::read_to_string(&report) {
-        Ok(contents) => print!("{contents}"),
+        Ok(contents) => ui::print_report(&contents, Some(&run_dir), color),
         Err(_) => {
             eprintln!("no report found for {run_id} (looked at {})", report.display());
             process::exit(1);

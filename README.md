@@ -133,8 +133,10 @@ The review phase is structured and can fan out across agents:
 
 On a TTY, `loope run` renders a small visual identity built from Loope's own motifs —
 the `∞` loop glyph, a `design → implement → review → verify` pipeline, live per-step
-progress (`running…` resolving in place to `✓`/`✗`), and a colored summary box. Agents
-are tinted by the logo's palette: Claude blue, Codex orange.
+progress (`running…` resolving in place to `✓`/`✗`), and a colored summary box that
+also lists every step with its gate result and review verdict. `loope show <run-id>`
+renders the same colored summary for a past run. Agents are tinted by the logo's
+palette: Claude blue, Codex orange.
 
 Color is automatic on a terminal and off when piped or when `NO_COLOR` is set; override
 with `--color auto|always|never`. Piped/CI output stays plain markdown.
