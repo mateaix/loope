@@ -39,6 +39,19 @@ impl ActionKind {
             ActionKind::Other => "other",
         }
     }
+
+    /// Parse a persisted action id (inverse of [`ActionKind::as_str`]).
+    pub fn parse(id: &str) -> Option<ActionKind> {
+        Some(match id {
+            "read" => ActionKind::Read,
+            "edit" => ActionKind::Edit,
+            "write" => ActionKind::Write,
+            "command" => ActionKind::Command,
+            "search" => ActionKind::Search,
+            "other" => ActionKind::Other,
+            _ => return None,
+        })
+    }
 }
 
 /// A single normalized event from an agent's run.
@@ -92,6 +105,64 @@ pub fn events_to_jsonl(events: &[LoopEvent]) -> String {
     out
 }
 
+/// Parse one `events.jsonl` line back into a [`LoopEvent`] (inverse of
+/// [`LoopEvent::to_json_line`]), so a recorded run's data stream can be replayed.
+pub fn parse_event_line(line: &str) -> Option<LoopEvent> {
+    match json_str(line, "type")?.as_str() {
+        "model" => Some(LoopEvent::Model {
+            name: json_str(line, "name")?,
+        }),
+        "action" => Some(LoopEvent::Action {
+            kind: ActionKind::parse(&json_str(line, "kind")?)?,
+            target: json_str(line, "target").unwrap_or_default(),
+        }),
+        "message" => Some(LoopEvent::Message {
+            text: json_str(line, "text").unwrap_or_default(),
+        }),
+        "usage" => Some(LoopEvent::Usage {
+            input_tokens: json_u64(line, "input_tokens").unwrap_or(0),
+            output_tokens: json_u64(line, "output_tokens").unwrap_or(0),
+        }),
+        _ => None,
+    }
+}
+
+/// Extract a `"key":"value"` string, reversing [`esc`].
+fn json_str(line: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = line.find(&needle)? + needle.len();
+    let mut out = String::new();
+    let mut chars = line[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let hex: String = (0..4).filter_map(|_| chars.next()).collect();
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// Extract a `"key":<number>` field.
+fn json_u64(line: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\":");
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 /// Minimal JSON string escaping.
 fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -135,5 +206,19 @@ mod tests {
         assert!(jsonl.contains("\"type\":\"action\",\"kind\":\"edit\",\"target\":\"src/lib.rs\""));
         assert!(jsonl.contains("\\\"ok\\\""));
         assert_eq!(jsonl.lines().count(), 2);
+    }
+
+    #[test]
+    fn events_round_trip_through_jsonl() {
+        let events = vec![
+            LoopEvent::Model { name: "claude-x".to_string() },
+            LoopEvent::Action { kind: ActionKind::Command, target: "cargo test".to_string() },
+            LoopEvent::Message { text: "fixed\n\"the\" bug\ttabs".to_string() },
+            LoopEvent::Usage { input_tokens: 1200, output_tokens: 340 },
+        ];
+        let jsonl = events_to_jsonl(&events);
+        let parsed: Vec<LoopEvent> = jsonl.lines().filter_map(parse_event_line).collect();
+        assert_eq!(parsed, events);
+        assert_eq!(parse_event_line("not json"), None);
     }
 }

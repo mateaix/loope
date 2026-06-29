@@ -1,6 +1,7 @@
 //! Rendering: a pure function of [`App`]. The frame is a header, a two-pane body
 //! (run list | run detail), and a footer of key hints, with an optional help overlay.
 
+mod activity;
 mod detail;
 mod home;
 mod preview;
@@ -74,9 +75,9 @@ fn header_line(app: &App) -> Line<'static> {
 
 fn footer_line(app: &App) -> Line<'static> {
     let hints = if app.live {
-        " running… · ↑/↓ steps · d diff · t transcript · ? help · q quit "
+        " running… · ↑/↓ steps · a activity · d diff · ? help · q quit "
     } else {
-        " ↑/↓ move · → open · ← back · d diff · t transcript · esc home · ? help · q quit "
+        " ↑/↓ move · → open · a activity · d diff · t transcript · esc home · ? help · q quit "
     };
     Line::from(Span::styled(hints, Style::new().fg(style::DIM)))
 }
@@ -104,6 +105,7 @@ fn draw_help(frame: &mut Frame) {
         Line::from("  →/l Enter   open / focus detail"),
         Line::from("  ←/h Esc     back / focus list"),
         Line::from("  Tab         switch pane"),
+        Line::from("  a           toggle the agent activity stream"),
         Line::from("  d / t       toggle diff / transcript"),
         Line::from("  g / G       top / bottom"),
         Line::from("  PgUp/PgDn   scroll preview"),
@@ -112,7 +114,7 @@ fn draw_help(frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled("  press any key to close", Style::new().fg(style::DIM))),
     ];
-    let area = centered(frame.area(), 40, lines.len() as u16 + 2);
+    let area = centered(frame.area(), 50, lines.len() as u16 + 2);
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines).block(

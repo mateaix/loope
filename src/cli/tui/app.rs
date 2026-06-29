@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use loope::Adapter;
+use loope::adapter::event::LoopEvent;
 use loope::adapter::{AdapterStatus, check_adapters};
 
 use super::action::Action;
@@ -28,6 +29,7 @@ pub enum Preview {
     Result,
     Diff,
     Transcript,
+    Activity,
 }
 
 /// Which screen the TUI is showing.
@@ -73,7 +75,12 @@ pub struct App {
     pub live_done: bool,
     pub live_iter: Option<(usize, usize)>,
     pub active: Option<String>,
-    pub activity: Vec<String>,
+    /// The active step's normalized event stream (actions + messages).
+    pub activity: Vec<LoopEvent>,
+    /// The active step's model, if the CLI reported one.
+    pub model: Option<String>,
+    /// The active step's latest (input, output) token counts, if reported.
+    pub tokens: Option<(u64, u64)>,
     spinner: usize,
 }
 
@@ -131,6 +138,8 @@ impl App {
             live_iter: None,
             active: None,
             activity: Vec::new(),
+            model: None,
+            tokens: None,
             spinner: 0,
         }
     }
@@ -343,6 +352,8 @@ impl App {
         self.live_iter = None;
         self.active = None;
         self.activity.clear();
+        self.model = None;
+        self.tokens = None;
         self.error = None;
     }
 
@@ -362,13 +373,21 @@ impl App {
             LiveMsg::StepStart { role, adapter } => {
                 self.active = Some(format!("{role} · {adapter}"));
                 self.activity.clear();
+                self.model = None;
+                self.tokens = None;
             }
-            LiveMsg::Activity(line) => {
-                self.activity.push(line);
-                if self.activity.len() > 200 {
-                    self.activity.remove(0);
+            LiveMsg::Event(event) => match event {
+                LoopEvent::Model { name } => self.model = Some(name),
+                LoopEvent::Usage { input_tokens, output_tokens } => {
+                    self.tokens = Some((input_tokens, output_tokens));
                 }
-            }
+                action_or_message => {
+                    self.activity.push(action_or_message);
+                    if self.activity.len() > 500 {
+                        self.activity.remove(0);
+                    }
+                }
+            },
             LiveMsg::StepFinish(step) => {
                 if let Some(detail) = self.detail.as_mut() {
                     detail.steps.push(*step);
@@ -420,6 +439,7 @@ impl App {
             Action::Bottom => self.move_to_edge(false),
             Action::ToggleDiff => self.set_preview(Preview::Diff),
             Action::ToggleTranscript => self.set_preview(Preview::Transcript),
+            Action::ToggleActivity => self.set_preview(Preview::Activity),
             Action::PageUp => self.preview_scroll = self.preview_scroll.saturating_sub(10),
             Action::PageDown => self.preview_scroll = self.preview_scroll.saturating_add(10),
             Action::Refresh => self.refresh(),

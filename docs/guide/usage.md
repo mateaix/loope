@@ -350,8 +350,10 @@ loope run --tui "..."      # run one specific requirement full-screen
   iteration on the right; a preview pane showing the focused step's result, its diff, or
   its transcript.
 - **Live** (`loope run --tui`) — the same layout with full `run` flags, updating as the
-  loop runs (iteration header + spinner, an activity feed for the active step). When the
-  run converges it settles into the browser view.
+  loop runs: the active step streams the agent's **data flow** — each file read/edit, each
+  command, the model in use, assistant messages, and a running token count — so you can
+  see exactly what Claude and Codex are doing. When the run converges it settles into the
+  browser, where `a` replays any finished step's recorded stream.
 
 On the **home** screen: type to edit the requirement, **Enter** to run it, **Tab** to
 browse past runs, **Esc** to quit. In the **browser / live** views:
@@ -362,6 +364,7 @@ browse past runs, **Esc** to quit. In the **browser / live** views:
 | `→`/`l`, `Enter` | open / focus the detail pane |
 | `←`/`h`, `Esc` | back / focus the run list |
 | `Tab` | switch pane |
+| `a` | toggle the agent activity stream (actions, messages, model, tokens) |
 | `d` / `t` | toggle the diff / transcript preview |
 | `g` / `G` | top / bottom |
 | `PgUp` / `PgDn` | scroll the preview |

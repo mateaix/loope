@@ -13,7 +13,8 @@ use super::model::StepView;
 pub enum LiveMsg {
     Iteration { n: usize, total: usize },
     StepStart { role: String, adapter: String },
-    Activity(String),
+    /// One normalized event from the agent's stream (action, message, model, usage).
+    Event(LoopEvent),
     StepFinish(Box<StepView>),
 }
 
@@ -41,56 +42,12 @@ impl StepObserver for TuiObserver {
     }
 
     fn on_event(&self, event: &LoopEvent) {
-        if let Some(line) = format_event(event) {
-            let _ = self.tx.send(LiveMsg::Activity(line));
-        }
+        // Forward the whole stream; the UI decides how to render each event.
+        let _ = self.tx.send(LiveMsg::Event(event.clone()));
     }
 
     fn on_step_finish(&self, outcome: &StepOutcome) {
         let _ = self.tx.send(LiveMsg::StepFinish(Box::new(step_view(outcome))));
-    }
-}
-
-/// A short one-line rendering of an event for the activity feed (`None` to skip).
-fn format_event(event: &LoopEvent) -> Option<String> {
-    match event {
-        LoopEvent::Action { kind, target } => {
-            let verb = kind.label();
-            if target.is_empty() {
-                Some(verb.to_string())
-            } else {
-                Some(format!("{verb} {}", shorten(target)))
-            }
-        }
-        LoopEvent::Message { text } => {
-            let line = text.lines().next().unwrap_or("").trim();
-            (!line.is_empty()).then(|| format!("› {}", truncate(line, 110)))
-        }
-        // The model banner and token usage are noise in the live feed.
-        LoopEvent::Model { .. } | LoopEvent::Usage { .. } => None,
-    }
-}
-
-fn shorten(target: &str) -> String {
-    // Keep the tail (file paths and commands read better right-aligned).
-    truncate_tail(target.trim(), 70)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
-    }
-}
-
-fn truncate_tail(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        s.to_string()
-    } else {
-        let tail: String = s.chars().skip(count - (max - 1)).collect();
-        format!("…{tail}")
     }
 }
 

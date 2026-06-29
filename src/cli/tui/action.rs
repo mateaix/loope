@@ -23,6 +23,7 @@ pub enum Action {
     PageDown,
     ToggleDiff,
     ToggleTranscript,
+    ToggleActivity,
     Refresh,
     Help,
 }
@@ -50,6 +51,7 @@ pub fn action_from_key(key: KeyEvent) -> Option<Action> {
         KeyCode::PageDown => Action::PageDown,
         KeyCode::Char('d') => Action::ToggleDiff,
         KeyCode::Char('t') => Action::ToggleTranscript,
+        KeyCode::Char('a') => Action::ToggleActivity,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('?') => Action::Help,
         _ => return None,

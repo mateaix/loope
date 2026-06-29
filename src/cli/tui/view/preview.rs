@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use loope::adapter::event::parse_event_line;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
@@ -13,11 +14,12 @@ use ratatui::Frame;
 use super::super::app::{App, Preview};
 use super::super::model::{RunDetail, StepView};
 use super::super::style;
+use super::activity::activity_line;
 
 pub fn render(frame: &mut Frame, app: &App, detail: &RunDetail, area: Rect) {
     // While a step is running, the preview becomes its live activity feed.
     if app.live && app.active.is_some() {
-        render_activity(frame, app, area);
+        render_running(frame, app, area);
         return;
     }
 
@@ -25,6 +27,7 @@ pub fn render(frame: &mut Frame, app: &App, detail: &RunDetail, area: Rect) {
         Preview::Result => ("result", result_text(detail.steps.get(app.detail_selected))),
         Preview::Diff => ("diff", diff_text(detail, app.detail_selected)),
         Preview::Transcript => ("transcript", transcript_text(detail, app.detail_selected)),
+        Preview::Activity => ("activity", activity_text(detail, app.detail_selected)),
     };
 
     let block = Block::bordered()
@@ -39,18 +42,29 @@ pub fn render(frame: &mut Frame, app: &App, detail: &RunDetail, area: Rect) {
     );
 }
 
-/// The activity feed of the currently-running step, pinned to the latest lines.
-fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
+/// The live data stream of the currently-running step: a header (model + tokens) over the
+/// agent's event feed, pinned to the latest lines.
+fn render_running(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines = Vec::new();
     if let Some(active) = &app.active {
-        lines.push(Line::from(vec![
+        let mut head = vec![
             Span::styled(format!("{} ", app.spinner_char()), Style::new().fg(style::BRAND)),
-            Span::raw(active.clone()),
-        ]));
+            Span::styled(active.clone(), Style::new().fg(style::BRAND).bold()),
+        ];
+        if let Some(model) = &app.model {
+            head.push(Span::styled(format!("  · {model}"), Style::new().fg(style::DIM)));
+        }
+        if let Some((input, output)) = app.tokens {
+            head.push(Span::styled(
+                format!("  · {input}→{output} tok"),
+                Style::new().fg(style::DIM),
+            ));
+        }
+        lines.push(Line::from(head));
         lines.push(Line::from(""));
     }
-    for entry in &app.activity {
-        lines.push(Line::raw(entry.clone()));
+    for event in &app.activity {
+        lines.push(activity_line(event));
     }
 
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -62,6 +76,32 @@ fn render_activity(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(lines).block(block).scroll((scroll, 0)),
         area,
     );
+}
+
+/// Browse view: replay a finished step's recorded event stream from `events.jsonl`.
+fn activity_text(detail: &RunDetail, selected: usize) -> Text<'static> {
+    let Some(step) = detail.steps.get(selected) else {
+        return Text::raw("");
+    };
+    let path = agent_dir(detail, step).join("events.jsonl");
+    let lines: Vec<Line> = fs::read_to_string(&path)
+        .ok()
+        .into_iter()
+        .flat_map(|raw| {
+            raw.lines()
+                .filter_map(parse_event_line)
+                .map(|event| activity_line(&event))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if lines.is_empty() {
+        Text::from(Line::from(Span::styled(
+            "(no recorded activity)",
+            Style::new().fg(style::DIM),
+        )))
+    } else {
+        Text::from(lines)
+    }
 }
 
 fn result_text(step: Option<&StepView>) -> Text<'static> {

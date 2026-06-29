@@ -257,6 +257,13 @@ mod tests {
             "- Run: run-0001\n- Outcome: converged\n- Iterations: 1\n\n## Steps\n\n### Iteration 1\n\n1. **implementer via Claude** — PASS\n   - Message: hi\n",
         )
         .unwrap();
+        let agent = run.join("agents").join("01-implementer-claude");
+        fs::create_dir_all(&agent).unwrap();
+        fs::write(
+            agent.join("events.jsonl"),
+            "{\"type\":\"action\",\"kind\":\"edit\",\"target\":\"src/lib.rs\"}\n{\"type\":\"message\",\"text\":\"added multiply\"}\n",
+        )
+        .unwrap();
         dir
     }
 
@@ -325,6 +332,20 @@ mod tests {
         assert_eq!(app.options.max_iters, 7);
         assert_eq!(app.options.config("x".to_string()).max_iters, 7);
         assert!(app.input.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn activity_view_renders_recorded_stream() {
+        let dir = temp_runs();
+        let mut app = App::new(&dir);
+        app.update(action::Action::ToggleActivity);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| view::draw(frame, &app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("edit"));
+        assert!(text.contains("src/lib.rs"));
+        assert!(text.contains("added multiply"));
         let _ = fs::remove_dir_all(&dir);
     }
 
