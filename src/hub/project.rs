@@ -85,6 +85,18 @@ pub fn discover(store: &Store, extra_roots: &[PathBuf]) -> Vec<Project> {
         }
         if let Some(project) = discover_project(&root, store) {
             projects.push(project);
+        } else if root.is_dir() {
+            // Registered (or the current dir) but no runs yet — still list it so a first run
+            // can target it.
+            let name = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.to_string_lossy().into_owned());
+            projects.push(Project {
+                path: root,
+                name,
+                sessions: Vec::new(),
+            });
         }
     }
 
@@ -123,6 +135,19 @@ mod tests {
         assert_eq!(p.sessions[1].id, "0001-first");
 
         let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(store.dir());
+    }
+
+    #[test]
+    fn discover_includes_registered_dir_without_runs() {
+        let dir = temp_dir("noruns");
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::at(temp_dir("store4")).unwrap();
+        store.add_project(&dir.to_string_lossy()).unwrap();
+        let projects = discover(&store, &[]);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].run_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(store.dir());
     }
 

@@ -276,18 +276,49 @@ async function runSearch(query) {
   }
 }
 
+// A small glass prompt — WKWebView (Tauri) does not support window.prompt().
+function askText(title, def) {
+  return new Promise((resolve) => {
+    const back = el("div", "modal-back");
+    const box = el("div", "modal");
+    box.appendChild(el("div", "modal-t", title));
+    const input = el("input", "modal-in");
+    input.type = "text";
+    input.value = def || "";
+    box.appendChild(input);
+    const row = el("div", "modal-row");
+    const cancel = el("button", "btn ghost", "Cancel");
+    const ok = el("button", "btn", "OK");
+    row.appendChild(cancel);
+    row.appendChild(ok);
+    box.appendChild(row);
+    back.appendChild(box);
+    document.body.appendChild(back);
+    input.focus();
+    input.select();
+    const done = (v) => { back.remove(); resolve(v); };
+    cancel.onclick = () => done(null);
+    ok.onclick = () => done(input.value);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") done(input.value);
+      else if (e.key === "Escape") done(null);
+    });
+    back.addEventListener("mousedown", (e) => { if (e.target === back) done(null); });
+  });
+}
+
 // ---------------------------------------------------------------- rename / projects
 async function renameSession(s) {
-  const name = window.prompt("Name this run:", s.name || s.id);
+  const name = await askText("Name this run:", s.name || s.id);
   if (name == null) return;
   try { await invoke("set_session_name", { id: s.id, name }); await loadProjects(); }
   catch (e) { toast("rename failed"); }
 }
 
 async function addProject() {
-  const path = window.prompt("Project path (a directory with .loope/runs):");
+  const path = await askText("Project path (a directory with .loope/runs):", state.activeProject ? state.activeProject.path : "");
   if (!path) return;
-  try { await invoke("add_project", { path }); await loadProjects(); toast("project registered"); }
+  try { await invoke("add_project", { path: path.trim() }); await loadProjects(); toast("project registered"); }
   catch (e) { toast("could not register project"); }
 }
 
@@ -334,7 +365,14 @@ function renderSettings() {
     r.appendChild(nm); r.appendChild(del); box.appendChild(r);
   }
   const save = el("button", "btn", "save current as preset");
-  save.onclick = () => { const name = window.prompt("Preset name:"); if (!name) return; const p = presetsStore(); p[name] = Object.assign({}, OPTIONS); savePresets(p); renderSettings(); };
+  save.onclick = async () => {
+    const name = await askText("Preset name:", "");
+    if (!name) return;
+    const p = presetsStore();
+    p[name.trim()] = Object.assign({}, OPTIONS);
+    savePresets(p);
+    renderSettings();
+  };
   box.appendChild(save);
   s.appendChild(box);
 }
