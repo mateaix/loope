@@ -18,8 +18,16 @@ use ui::{ColorChoice, PrettyObserver};
 fn main() {
     let mut args: Vec<String> = env::args().skip(1).collect();
 
-    if args.is_empty() || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+    if args.first().is_some_and(|a| a == "--help" || a == "-h" || a == "help") {
         print_help();
+        return;
+    }
+
+    // Bare `loope` (or only flags, e.g. `loope --dry-run`) opens the interactive home
+    // screen, like `claude` / `codex`. With no `tui` feature or no terminal, show help.
+    if args.iter().all(|a| a.starts_with('-')) {
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+        launch_home(dry_run);
         return;
     }
 
@@ -41,6 +49,28 @@ fn main() {
             print_help();
             process::exit(2);
         }
+    }
+}
+
+/// Open the interactive home TUI (the front door). Falls back to help when the binary
+/// has no `tui` feature or stdout is not a terminal.
+fn launch_home(dry_run: bool) {
+    #[cfg(feature = "tui")]
+    {
+        if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            let cwd = current_dir_or_exit();
+            if let Err(err) = cli::tui::run_home(&cwd, dry_run) {
+                eprintln!("tui error: {err}");
+                process::exit(1);
+            }
+            return;
+        }
+        print_help();
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = dry_run;
+        print_help();
     }
 }
 

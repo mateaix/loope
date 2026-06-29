@@ -2,6 +2,7 @@
 //! (run list | run detail), and a footer of key hints, with an optional help overlay.
 
 mod detail;
+mod home;
 mod preview;
 mod runs;
 
@@ -11,11 +12,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
-use super::app::App;
+use super::app::{App, Screen};
 use super::style;
 
 /// Draw the whole UI for the current state.
 pub fn draw(frame: &mut Frame, app: &App) {
+    if app.screen == Screen::Home {
+        home::render(frame, app);
+        if app.show_help {
+            draw_help(frame);
+        }
+        return;
+    }
+
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -25,7 +34,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     frame.render_widget(header_line(app), header);
     draw_body(frame, app, body);
-    frame.render_widget(footer_line(), footer);
+    frame.render_widget(footer_line(app), footer);
 
     if app.show_help {
         draw_help(frame);
@@ -63,11 +72,13 @@ fn header_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-fn footer_line() -> Line<'static> {
-    Line::from(Span::styled(
-        " ↑/↓ move · → open · ← back · tab pane · d diff · t transcript · ? help · q quit ",
-        Style::new().fg(style::DIM),
-    ))
+fn footer_line(app: &App) -> Line<'static> {
+    let hints = if app.live {
+        " running… · ↑/↓ steps · d diff · t transcript · ? help · q quit "
+    } else {
+        " ↑/↓ move · → open · ← back · d diff · t transcript · esc home · ? help · q quit "
+    };
+    Line::from(Span::styled(hints, Style::new().fg(style::DIM)))
 }
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {

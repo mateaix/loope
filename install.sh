@@ -1,11 +1,21 @@
 #!/usr/bin/env sh
 # Build and install the `loope` CLI to your Cargo bin directory (~/.cargo/bin).
 #
-# Usage:
-#   ./install.sh
+# Installs with the interactive TUI by default, so plain `loope` opens the
+# full-screen prompt (like claude / codex). For the minimal std-only build,
+# run: ./install.sh --no-tui
 #
-# Requires Rust/Cargo (https://rustup.rs). No other dependencies.
+# Usage:
+#   ./install.sh            # install with the interactive TUI
+#   ./install.sh --no-tui   # minimal build, no TUI dependencies
+#
+# Requires Rust/Cargo (https://rustup.rs).
 set -eu
+
+features="--features tui"
+if [ "${1:-}" = "--no-tui" ]; then
+  features=""
+fi
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: cargo (Rust) not found. Install Rust from https://rustup.rs" >&2
@@ -17,7 +27,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$script_dir"
 
 echo "Building and installing loope (release)..."
-cargo install --path . --force
+# shellcheck disable=SC2086
+cargo install --path . --force $features
 
 if command -v loope >/dev/null 2>&1; then
   echo
@@ -25,7 +36,11 @@ if command -v loope >/dev/null 2>&1; then
   echo "Smoke test:"
   loope adapters
   echo
-  echo "Next: loope run --dry-run \"Add login\""
+  if [ -n "$features" ]; then
+    echo "Next: run \`loope\` to open the interactive prompt."
+  else
+    echo "Next: loope run --dry-run \"Add login\""
+  fi
 else
   echo
   echo "Installed to your Cargo bin. Add ~/.cargo/bin to PATH, e.g.:"

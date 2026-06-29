@@ -307,31 +307,37 @@ the run's total time and stop reason.
 
 ## Interactive TUI
 
-Loope ships an optional full-screen **interactive terminal UI** for browsing runs and
-watching the loop live. It is built on [ratatui](https://ratatui.rs) and gated behind a
-`tui` cargo feature, so the **default build stays dependency-free** (std only) — you opt
-in when you build:
+Loope ships a full-screen **interactive terminal UI** — the front door when you just run
+`loope`, like `claude` or `codex`. It is built on [ratatui](https://ratatui.rs) and gated
+behind a `tui` cargo feature; `./install.sh` enables it by default, while the **default
+`cargo build` and the `loope` library stay dependency-free** (std only):
 
 ```bash
-cargo install --path . --features tui     # install with the TUI
-cargo run --features tui -- tui            # …or run from source
+./install.sh                  # installs with the TUI
+./install.sh --no-tui         # minimal std-only build (no TUI)
+cargo run --features tui      # from source
 ```
 
-Two entry points:
+Three entry points:
 
 ```bash
-loope tui                  # browse .loope/runs interactively
-loope run --tui "..."      # watch a run execute in a full-screen dashboard
+loope                      # the home prompt: type a requirement, run it, browse, repeat
+loope tui                  # just browse .loope/runs interactively
+loope run --tui "..."      # run one specific requirement full-screen
 ```
 
+- **Home** (`loope`) — a prompt: type what you want built and press **Enter**. Loope runs
+  the loop (Claude implements, Codex reviews, up to 3 iterations) live, then shows the
+  result; type the next requirement to go again. `Tab` browses past runs.
 - **Browser** (`loope tui`) — a run list on the left; the selected run's steps grouped by
   iteration on the right; a preview pane showing the focused step's result, its diff, or
   its transcript.
-- **Live** (`loope run --tui`) — the same layout, updating as the loop runs (iteration
-  header + spinner, an activity feed for the active step, steps appearing as they finish).
-  When the run converges it settles into the browser view.
+- **Live** (`loope run --tui`) — the same layout with full `run` flags, updating as the
+  loop runs (iteration header + spinner, an activity feed for the active step). When the
+  run converges it settles into the browser view.
 
-Keys:
+On the **home** screen: type to edit the requirement, **Enter** to run it, **Tab** to
+browse past runs, **Esc** to quit. In the **browser / live** views:
 
 | Key | Action |
 | --- | --- |

@@ -54,14 +54,16 @@ the full documentation layout.
 ## Quick start
 
 ```bash
-./install.sh                       # build + install loope to ~/.cargo/bin
-loope run --dry-run "Add login"    # run the whole loop with stub agents (no CLIs)
+./install.sh                       # build + install loope (with the interactive TUI)
+loope                              # open the prompt: type a requirement, watch it run
 
-# or, from source without installing:
-cargo test
-cargo run -- plan "Add login"
+# scriptable CLI (no TUI needed):
+loope run --dry-run "Add login"    # run the whole loop with stub agents (no CLIs)
+loope runs                         # list past runs
+
+# from source without installing:
+cargo run --features tui           # the interactive prompt
 cargo run -- run --dry-run "Add login"
-cargo run -- adapters
 ```
 
 ## Commands
@@ -206,20 +208,24 @@ with `--color auto|always|never`. Piped/CI output stays plain markdown.
 
 ## Interactive TUI (optional)
 
-Beyond the streaming print feed, Loope has an optional full-screen **interactive TUI**
-(built on [ratatui](https://ratatui.rs)) for browsing runs and watching the loop live. It
-lives behind a `tui` cargo feature, so the **default build stays dependency-free** — opt
-in when you build:
+`./install.sh` installs Loope with a full-screen **interactive TUI** (built on
+[ratatui](https://ratatui.rs)), so plain `loope` drops you into a prompt — like `claude`
+or `codex`:
 
 ```bash
-cargo install --path . --features tui
-loope tui                 # browse .loope/runs: list ↔ steps ↔ diff/transcript
-loope run --tui "..."     # watch the loop run full-screen, then browse the result
+loope                     # type a requirement → watch it run → browse the result → repeat
+loope tui                 # just browse .loope/runs: list ↔ steps ↔ diff/transcript
+loope run --tui "..."     # run a specific requirement full-screen
 ```
 
-Keyboard-first (`j/k`/arrows to move, `→`/`Enter` to drill in, `d`/`t` for diff/transcript,
-`?` for help, `q` to quit). Without the feature the TUI commands print a hint; everything
-else is unchanged. See the [usage guide](docs/guide/usage.md#interactive-tui).
+Keyboard-first: type your requirement and press **Enter** to launch it; `Tab` browses past
+runs, `j/k`/arrows move, `→`/`Enter` drills in, `d`/`t` toggle diff/transcript, `?` for
+help, `q`/`Esc` to quit.
+
+The TUI lives behind a `tui` cargo feature, so the **default `cargo build` and the `loope`
+library stay dependency-free** (std only). `./install.sh --no-tui` builds the minimal CLI;
+there, `loope run` works as always and the TUI commands print a hint. See the
+[usage guide](docs/guide/usage.md#interactive-tui).
 
 ## Supported adapters
 

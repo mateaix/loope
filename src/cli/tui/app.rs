@@ -25,9 +25,27 @@ pub enum Preview {
     Transcript,
 }
 
+/// Which screen the TUI is showing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Screen {
+    /// The prompt: type a requirement and launch a run.
+    Home,
+    /// A run is executing.
+    Live,
+    /// Browsing finished runs.
+    Browse,
+}
+
 /// All TUI state.
 pub struct App {
     base: PathBuf,
+    pub screen: Screen,
+    /// The prompt text being typed on the home screen.
+    pub input: String,
+    /// Set when the user submits a requirement; the event loop launches it.
+    submit: Option<String>,
+    /// A transient error to surface (e.g. a run failed to start).
+    pub error: Option<String>,
     pub runs: Vec<RunEntry>,
     pub runs_selected: usize,
     pub detail: Option<RunDetail>,
@@ -37,7 +55,7 @@ pub struct App {
     pub preview_scroll: u16,
     pub show_help: bool,
     pub should_quit: bool,
-    // Live mode (`loope run --tui`): populated from observer messages.
+    // Live mode: populated from observer messages.
     pub live: bool,
     pub live_done: bool,
     pub live_iter: Option<(usize, usize)>,
@@ -47,10 +65,19 @@ pub struct App {
 }
 
 impl App {
-    /// Build the app from a runs directory, selecting and loading the newest run.
+    /// The home screen: a prompt to type a requirement, with past runs available to
+    /// browse. This is the front door (`loope` with no arguments).
+    pub fn home(runs_dir: &Path) -> Self {
+        let mut app = Self::new(runs_dir);
+        app.screen = Screen::Home;
+        app
+    }
+
+    /// A browse-only app over a runs directory (`loope tui`), newest run selected.
     pub fn new(runs_dir: &Path) -> Self {
         let runs = load_runs(runs_dir);
         let mut app = Self::empty(runs_dir.to_path_buf());
+        app.screen = Screen::Browse;
         app.runs = runs;
         app.reload_detail();
         app
@@ -60,19 +87,17 @@ impl App {
     /// messages, with the detail pane focused.
     pub fn new_live(run_id: String, runs_dir: &Path) -> Self {
         let mut app = Self::empty(runs_dir.to_path_buf());
-        app.detail = Some(RunDetail {
-            dir: runs_dir.join(&run_id),
-            id: run_id,
-            ..Default::default()
-        });
-        app.focus = Focus::Detail;
-        app.live = true;
+        app.begin_live(run_id, runs_dir.to_path_buf());
         app
     }
 
     fn empty(base: PathBuf) -> Self {
         Self {
             base,
+            screen: Screen::Browse,
+            input: String::new(),
+            submit: None,
+            error: None,
             runs: Vec::new(),
             runs_selected: 0,
             detail: None,
@@ -89,6 +114,63 @@ impl App {
             activity: Vec::new(),
             spinner: 0,
         }
+    }
+
+    // --- Home-screen text input -------------------------------------------------
+
+    pub fn input_char(&mut self, c: char) {
+        self.error = None;
+        self.input.push(c);
+    }
+
+    pub fn input_backspace(&mut self) {
+        self.input.pop();
+    }
+
+    /// Queue the typed requirement for launch (no-op if blank).
+    pub fn input_submit(&mut self) {
+        let requirement = self.input.trim().to_string();
+        if !requirement.is_empty() {
+            self.submit = Some(requirement);
+            self.input.clear();
+        }
+    }
+
+    /// Take a queued requirement, if any (called by the event loop to start a run).
+    pub fn take_submit(&mut self) -> Option<String> {
+        self.submit.take()
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        self.error = Some(message);
+    }
+
+    /// Switch between the home prompt and browsing history.
+    pub fn toggle_home_browse(&mut self) {
+        self.screen = match self.screen {
+            Screen::Home => Screen::Browse,
+            _ => Screen::Home,
+        };
+    }
+
+    /// Begin a fresh live run, resetting the accumulating detail.
+    pub fn begin_live(&mut self, run_id: String, run_dir: PathBuf) {
+        self.detail = Some(RunDetail {
+            dir: run_dir,
+            id: run_id,
+            ..Default::default()
+        });
+        self.detail_selected = 0;
+        self.focus = Focus::Detail;
+        self.preview = Preview::Result;
+        self.preview_scroll = 0;
+        self.screen = Screen::Live;
+        self.live = true;
+        self.live_done = false;
+        self.live_iter = None;
+        self.active = None;
+        self.activity.clear();
+        self.error = None;
     }
 
     /// Advance the spinner (called each UI tick in live mode).
@@ -130,6 +212,7 @@ impl App {
         self.live = false;
         self.live_done = true;
         self.active = None;
+        self.screen = Screen::Browse;
         let id = self.detail.as_ref().map(|d| d.id.clone());
         self.runs = load_runs(&self.base);
         self.runs_selected = id

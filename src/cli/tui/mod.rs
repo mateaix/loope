@@ -1,8 +1,9 @@
 //! Interactive terminal UI, built on ratatui (which re-exports its crossterm backend).
 //!
 //! Compiled only with `--features tui`; the default build and the `loope` library stay
-//! dependency-free. Two entry points: [`run_browser`] explores `.loope/runs/` and
-//! [`run_live`] watches a loop execute.
+//! dependency-free. The front door is [`run_home`] — a prompt you type a requirement into,
+//! watch run live, then browse. [`run_browser`] and [`run_live`] are the `loope tui` and
+//! `loope run --tui` entry points; all three share one [`app_loop`].
 
 mod action;
 mod app;
@@ -12,44 +13,51 @@ mod style;
 mod view;
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use loope::adapter::Invoker;
+use loope::Adapter;
+use loope::adapter::{Invoker, StubInvoker, SubprocessInvoker};
 use loope::engine::workspace::RunWorkspace;
 use loope::engine::{LoopConfig, execute_loop};
 
 use action::action_from_key;
-use app::App;
+use app::{App, Screen};
 use observer::{LiveMsg, TuiObserver};
 
-/// How long the live loop waits for a key before redrawing (drives the spinner).
+/// How long the loop waits for a key before redrawing (drives the spinner).
 const TICK: Duration = Duration::from_millis(80);
 
-/// Browse the runs under `runs_dir` interactively. Returns when the user quits.
-///
-/// [`ratatui::init`] switches to the alternate screen + raw mode and installs a panic
-/// hook that restores the terminal; [`ratatui::restore`] undoes it on the way out, so the
-/// terminal is left clean even if the event loop errors.
-pub fn run_browser(runs_dir: &Path) -> io::Result<()> {
+/// The interactive home screen (`loope` with no arguments): type a requirement, watch it
+/// run, browse the result, repeat. `dry_run` uses the stub agents.
+pub fn run_home(cwd: &Path, dry_run: bool) -> io::Result<()> {
+    let session = Session::new(cwd.to_path_buf(), dry_run);
+    let mut app = App::home(&session.base);
     let mut terminal = ratatui::init();
-    let result = browse_loop(&mut terminal, &mut App::new(runs_dir));
+    let result = app_loop(&mut terminal, &mut app, Some(&session), None, None);
     ratatui::restore();
     result
 }
 
-/// Run the loop in a full-screen live dashboard. The executor runs on a worker thread and
-/// streams updates over a channel; when it finishes the view settles into the browser.
+/// Browse the runs under `runs_dir` (`loope tui`); no new runs can be launched.
+pub fn run_browser(runs_dir: &Path) -> io::Result<()> {
+    let mut terminal = ratatui::init();
+    let result = app_loop(&mut terminal, &mut App::new(runs_dir), None, None, None);
+    ratatui::restore();
+    result
+}
+
+/// Watch a pre-configured run live (`loope run --tui`), then browse it.
 pub fn run_live(
     config: LoopConfig,
     workspace: RunWorkspace,
     invoker: Box<dyn Invoker + Send + Sync>,
 ) -> io::Result<()> {
-    let (tx, rx) = mpsc::channel();
     let run_id = workspace.run_id.clone();
     let runs_dir = workspace
         .root
@@ -58,56 +66,117 @@ pub fn run_live(
         .unwrap_or_else(|| workspace.root.clone());
     let mut app = App::new_live(run_id, &runs_dir);
 
+    let (tx, rx) = mpsc::channel();
     let worker = std::thread::spawn(move || {
         let observer = TuiObserver::new(tx);
         let _ = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
-        // `tx` drops here → the channel disconnects → the UI sees completion.
     });
 
     let mut terminal = ratatui::init();
-    let result = live_loop(&mut terminal, &mut app, &rx);
+    let result = app_loop(&mut terminal, &mut app, None, Some(rx), Some(worker));
     ratatui::restore();
-
-    // If the run finished, the worker has already exited; reap it. If the user quit early,
-    // don't block — returning ends the process.
-    if app.live_done {
-        let _ = worker.join();
-    }
     result
 }
 
-/// Browse mode blocks on input — there is no ticking work to do.
-fn browse_loop(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
-    while !app.should_quit {
-        terminal.draw(|frame| view::draw(frame, app))?;
-        if let Event::Key(key) = event::read()?
-            && let Some(action) = action_from_key(key)
-        {
-            app.update(action);
-        }
-    }
-    Ok(())
+/// Launches runs from the home prompt with sensible defaults.
+struct Session {
+    cwd: PathBuf,
+    base: PathBuf,
+    dry_run: bool,
 }
 
-/// Live mode polls for input on a short tick so the spinner animates and queued updates
-/// are drained even while the user is idle. After the run finishes it keeps running as a
-/// browser over the (now reloaded) run.
-fn live_loop(
+/// A spawned run the UI is watching.
+struct RunHandle {
+    run_id: String,
+    run_dir: PathBuf,
+    rx: Receiver<LiveMsg>,
+    worker: JoinHandle<()>,
+}
+
+impl Session {
+    fn new(cwd: PathBuf, dry_run: bool) -> Self {
+        let base = cwd.join(".loope").join("runs");
+        Self { cwd, base, dry_run }
+    }
+
+    /// Start a run for `requirement` on a worker thread (Claude implements, Codex reviews,
+    /// up to 3 iterations) and return its live channel.
+    fn start(&self, requirement: String) -> io::Result<RunHandle> {
+        let workspace = RunWorkspace::create(&self.base, &self.cwd, false)?;
+        let run_id = workspace.run_id.clone();
+        let run_dir = workspace.root.clone();
+        let config = LoopConfig {
+            requirement,
+            include_design: false,
+            designer: Adapter::Claude,
+            implementer: Adapter::Claude,
+            reviewers: vec![Adapter::Codex],
+            max_iters: 3,
+            verify_command: None,
+        };
+        let invoker: Box<dyn Invoker + Send + Sync> = if self.dry_run {
+            Box::new(StubInvoker)
+        } else {
+            Box::new(SubprocessInvoker {
+                isolate_home: false,
+                opencode_model: None,
+                timeout: Some(Duration::from_secs(600)),
+            })
+        };
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let observer = TuiObserver::new(tx);
+            let _ = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
+        });
+        Ok(RunHandle {
+            run_id,
+            run_dir,
+            rx,
+            worker,
+        })
+    }
+}
+
+/// The one event loop shared by every entry point: draw, read a key (text input on the
+/// home screen, actions elsewhere), launch a queued requirement, and drain live updates.
+fn app_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    rx: &Receiver<LiveMsg>,
+    session: Option<&Session>,
+    mut rx: Option<Receiver<LiveMsg>>,
+    mut worker: Option<JoinHandle<()>>,
 ) -> io::Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| view::draw(frame, app))?;
 
         if event::poll(TICK)?
             && let Event::Key(key) = event::read()?
-            && let Some(action) = action_from_key(key)
         {
-            app.update(action);
+            handle_key(app, key, session.is_some());
         }
 
-        drain(app, rx);
+        if let Some(requirement) = app.take_submit()
+            && let Some(session) = session
+        {
+            match session.start(requirement) {
+                Ok(handle) => {
+                    app.begin_live(handle.run_id, handle.run_dir);
+                    rx = Some(handle.rx);
+                    worker = Some(handle.worker);
+                }
+                Err(err) => app.set_error(format!("could not start run: {err}")),
+            }
+        }
+
+        if let Some(channel) = rx.as_ref()
+            && drain(app, channel)
+        {
+            rx = None;
+            if let Some(worker) = worker.take() {
+                let _ = worker.join();
+            }
+        }
+
         if app.live {
             app.tick();
         }
@@ -115,17 +184,47 @@ fn live_loop(
     Ok(())
 }
 
-/// Apply every queued live update; on disconnect, settle into browse mode.
-fn drain(app: &mut App, rx: &Receiver<LiveMsg>) {
+/// Interpret a key for the current screen. Returns nothing; mutates the app.
+fn handle_key(app: &mut App, key: KeyEvent, can_launch: bool) {
+    if key.kind == KeyEventKind::Release {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if app.screen == Screen::Home {
+        match key.code {
+            KeyCode::Enter => app.input_submit(),
+            KeyCode::Backspace => app.input_backspace(),
+            KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('c') if ctrl => app.should_quit = true,
+            KeyCode::Tab if !app.runs.is_empty() => app.toggle_home_browse(),
+            KeyCode::Char(c) if !ctrl => app.input_char(c),
+            _ => {}
+        }
+        return;
+    }
+
+    // Browse/Live: Esc returns to the prompt when this session can launch runs.
+    if can_launch && app.screen == Screen::Browse && key.code == KeyCode::Esc {
+        app.toggle_home_browse();
+        return;
+    }
+    if let Some(action) = action_from_key(key) {
+        app.update(action);
+    }
+}
+
+/// Apply every queued live update; returns `true` once the run's channel disconnects.
+fn drain(app: &mut App, rx: &Receiver<LiveMsg>) -> bool {
     loop {
         match rx.try_recv() {
             Ok(msg) => app.apply_live(msg),
-            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => {
                 if app.live {
                     app.finish_live();
                 }
-                break;
+                return true;
             }
         }
     }
@@ -183,6 +282,34 @@ mod tests {
         assert!(text.contains("loope"));
         assert!(text.contains("run-0001"));
         assert!(text.contains("implementer"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn home_frame_shows_prompt_and_typed_input() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir);
+        app.input_char('a');
+        app.input_char('d');
+        app.input_char('d');
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| view::draw(frame, &app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("loope"));
+        assert!(text.contains("add"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn submit_queues_then_clears_input() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir);
+        for c in "do it".chars() {
+            app.input_char(c);
+        }
+        app.input_submit();
+        assert_eq!(app.take_submit().as_deref(), Some("do it"));
+        assert!(app.input.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

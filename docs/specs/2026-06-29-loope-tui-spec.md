@@ -9,14 +9,22 @@ diff, drill into a step's transcript, or compare iterations. There is no way to 
 the history of runs interactively, and watching a long multi-iteration run means staring
 at a scrolling log.
 
-This spec adds an **interactive full-screen TUI** with two entry points:
+This spec adds an **interactive full-screen TUI**. The front door is bare `loope` — a
+**home prompt** you type a requirement into (like `claude` / `codex`), so the installed
+tool opens a GUI rather than printing help. Three entry points:
 
+- `loope` — the **home** screen: type a requirement, press Enter to run the loop live,
+  see the result, and type the next one. `Tab` browses past runs. `./install.sh` installs
+  this by default.
 - `loope tui` — an interactive **browser** over `.loope/runs/`: pick a run, see its steps
   grouped by iteration, and inspect each step's result, diff, and transcript in a preview
   pane.
-- `loope run --tui` — a **live dashboard** that watches the loop execute in full screen
-  (iterations, steps, streaming actions, cumulative diff) and lands in the browser view
-  when it converges.
+- `loope run --tui` — a **live dashboard** (with the full `run` flag set) that watches the
+  loop execute in full screen and lands in the browser view when it converges.
+
+All three share one event loop and view model; the home screen owns run creation (it
+builds a default `LoopConfig` — Claude implements, Codex reviews, max 3 iterations — and
+spawns the executor on a worker thread, exactly like the live path).
 
 The TUI is built with **ratatui + crossterm** — the de-facto-standard Rust TUI stack —
 behind an **optional `tui` cargo feature**, so the default build and the `loope` library
