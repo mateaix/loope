@@ -1,6 +1,8 @@
 //! Bridges the engine's [`StepObserver`] to the UI thread. The executor runs on a worker
 //! thread and pushes `LiveMsg`s over a channel; the engine never sees a ratatui type.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use loope::LoopStep;
@@ -18,14 +20,16 @@ pub enum LiveMsg {
     StepFinish(Box<StepView>),
 }
 
-/// A [`StepObserver`] that forwards everything to the UI over a channel.
+/// A [`StepObserver`] that forwards everything to the UI over a channel and watches a
+/// shared cancel flag the UI thread can set to stop the run.
 pub struct TuiObserver {
     tx: Sender<LiveMsg>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl TuiObserver {
-    pub fn new(tx: Sender<LiveMsg>) -> Self {
-        Self { tx }
+    pub fn new(tx: Sender<LiveMsg>, cancel: Arc<AtomicBool>) -> Self {
+        Self { tx, cancel }
     }
 }
 
@@ -48,6 +52,10 @@ impl StepObserver for TuiObserver {
 
     fn on_step_finish(&self, outcome: &StepOutcome) {
         let _ = self.tx.send(LiveMsg::StepFinish(Box::new(step_view(outcome))));
+    }
+
+    fn should_cancel(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
     }
 }
 

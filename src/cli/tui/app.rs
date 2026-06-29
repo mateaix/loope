@@ -85,6 +85,9 @@ pub struct App {
     // Live mode: populated from observer messages.
     pub live: bool,
     pub live_done: bool,
+    /// The user asked to stop the running loop (showing "stopping…").
+    pub stopping: bool,
+    stop_requested: bool,
     pub live_iter: Option<(usize, usize)>,
     pub active: Option<String>,
     /// The active step's normalized event stream (actions + messages).
@@ -160,6 +163,8 @@ impl App {
             should_quit: false,
             live: false,
             live_done: false,
+            stopping: false,
+            stop_requested: false,
             live_iter: None,
             active: None,
             activity: Vec::new(),
@@ -408,6 +413,8 @@ impl App {
         self.screen = Screen::Live;
         self.live = true;
         self.live_done = false;
+        self.stopping = false;
+        self.stop_requested = false;
         self.live_iter = None;
         self.active = None;
         self.activity.clear();
@@ -423,6 +430,18 @@ impl App {
 
     pub fn spinner_char(&self) -> &'static str {
         SPINNER[self.spinner % SPINNER.len()]
+    }
+
+    /// Ask the running loop to stop (Esc while live).
+    pub fn request_stop(&mut self) {
+        if self.live {
+            self.stop_requested = true;
+        }
+    }
+
+    /// Take a pending stop request (the event loop flips the shared cancel flag).
+    pub fn take_stop_request(&mut self) -> bool {
+        std::mem::take(&mut self.stop_requested)
     }
 
     /// Fold one live update into the state.
@@ -462,6 +481,7 @@ impl App {
     pub fn finish_live(&mut self) {
         self.live = false;
         self.live_done = true;
+        self.stopping = false;
         self.active = None;
         self.screen = Screen::Browse;
         let id = self.detail.as_ref().map(|d| d.id.clone());

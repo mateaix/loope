@@ -27,6 +27,8 @@ pub enum StopReason {
     StepFailed,
     /// A design-only run produced its contract.
     DesignOnly,
+    /// The user asked to stop (the loop halted at a step boundary).
+    Cancelled,
 }
 
 impl StopReason {
@@ -37,6 +39,7 @@ impl StopReason {
             StopReason::MaxIters => "stopped at the iteration cap",
             StopReason::StepFailed => "halted: a step failed",
             StopReason::DesignOnly => "design contract produced",
+            StopReason::Cancelled => "stopped by user",
         }
     }
 
@@ -46,6 +49,7 @@ impl StopReason {
             StopReason::MaxIters => "max_iters",
             StopReason::StepFailed => "step_failed",
             StopReason::DesignOnly => "design_only",
+            StopReason::Cancelled => "cancelled",
         }
     }
 }
@@ -75,6 +79,10 @@ pub trait StepObserver {
     fn on_event(&self, _event: &crate::adapter::event::LoopEvent) {}
     /// Called once a step's outcome (including its gate result) is known.
     fn on_step_finish(&self, outcome: &StepOutcome);
+    /// Polled at step boundaries; returning true asks the loop to stop. Default never.
+    fn should_cancel(&self) -> bool {
+        false
+    }
 }
 
 /// Outcome of one executed step.
@@ -299,6 +307,10 @@ pub fn execute_loop(
 
     'iterations: for iter in 1..=max {
         iterations = iter;
+        if observer.is_some_and(|o| o.should_cancel()) {
+            stop_reason = StopReason::Cancelled;
+            break 'iterations;
+        }
         if let Some(observer) = observer {
             observer.on_iteration_start(iter, max);
         }
@@ -330,6 +342,11 @@ pub fn execute_loop(
         let changed = !irun.changes.is_empty();
         let inotes = if changed { "change produced" } else { "no change made" };
         finish(observer, &mut outcomes, step_outcome(&istep, iter, irun, true, inotes, None, iprompt));
+
+        if observer.is_some_and(|o| o.should_cancel()) {
+            stop_reason = StopReason::Cancelled;
+            break 'iterations;
+        }
 
         // Review (reviewers run concurrently on the current state).
         let mut review_steps = Vec::new();
@@ -375,6 +392,10 @@ pub fn execute_loop(
         }
         if review_failed {
             stop_reason = StopReason::StepFailed;
+            break 'iterations;
+        }
+        if observer.is_some_and(|o| o.should_cancel()) {
+            stop_reason = StopReason::Cancelled;
             break 'iterations;
         }
 
@@ -886,6 +907,30 @@ mod tests {
         let ws = RunWorkspace::create(&base.join("runs"), &source, false, "demo run").unwrap();
         let run = execute_loop(cfg, &ws, invoker, None).unwrap();
         (run, ws)
+    }
+
+    #[test]
+    fn cancellation_stops_the_loop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CancelSoon {
+            polls: AtomicUsize,
+        }
+        impl StepObserver for CancelSoon {
+            fn on_step_start(&self, _step: &crate::LoopStep) {}
+            fn on_step_finish(&self, _outcome: &StepOutcome) {}
+            fn should_cancel(&self) -> bool {
+                // Let the first iteration's implement run, then ask to stop.
+                self.polls.fetch_add(1, Ordering::Relaxed) >= 1
+            }
+        }
+        let base = temp_base("cancel");
+        let source = temp_base("cancelsrc");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false, "demo").unwrap();
+        let observer = CancelSoon { polls: AtomicUsize::new(0) };
+        let run = execute_loop(&config(3, None), &ws, &StubInvoker, Some(&observer)).unwrap();
+        assert_eq!(run.stop_reason, StopReason::Cancelled);
+        assert!(!run.all_passed());
+        let _ = fs::remove_dir_all(base.parent().unwrap());
     }
 
     #[test]

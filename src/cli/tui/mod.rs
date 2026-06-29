@@ -18,6 +18,8 @@ mod view;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -43,7 +45,7 @@ pub fn run_home(cwd: &Path, dry_run: bool) -> io::Result<()> {
     let session = Session::new(cwd.to_path_buf());
     let mut app = App::home(&session.base, dry_run);
     let mut terminal = ratatui::init();
-    let result = app_loop(&mut terminal, &mut app, Some(&session), None, None);
+    let result = app_loop(&mut terminal, &mut app, Some(&session), None, None, None);
     ratatui::restore();
     result
 }
@@ -51,7 +53,7 @@ pub fn run_home(cwd: &Path, dry_run: bool) -> io::Result<()> {
 /// Browse the runs under `runs_dir` (`loope tui`); no new runs can be launched.
 pub fn run_browser(runs_dir: &Path) -> io::Result<()> {
     let mut terminal = ratatui::init();
-    let result = app_loop(&mut terminal, &mut App::new(runs_dir), None, None, None);
+    let result = app_loop(&mut terminal, &mut App::new(runs_dir), None, None, None, None);
     ratatui::restore();
     result
 }
@@ -71,13 +73,22 @@ pub fn run_live(
     let mut app = App::new_live(run_id, &runs_dir);
 
     let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let observer_cancel = cancel.clone();
     let worker = std::thread::spawn(move || {
-        let observer = TuiObserver::new(tx);
+        let observer = TuiObserver::new(tx, observer_cancel);
         let _ = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
     });
 
     let mut terminal = ratatui::init();
-    let result = app_loop(&mut terminal, &mut app, None, Some(rx), Some(worker));
+    let result = app_loop(
+        &mut terminal,
+        &mut app,
+        None,
+        Some(rx),
+        Some(worker),
+        Some(cancel),
+    );
     ratatui::restore();
     result
 }
@@ -94,6 +105,7 @@ struct RunHandle {
     run_dir: PathBuf,
     rx: Receiver<LiveMsg>,
     worker: JoinHandle<()>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -118,8 +130,10 @@ impl Session {
         let config = options.config(requirement);
         let invoker = options.make_invoker();
         let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let observer_cancel = cancel.clone();
         let worker = std::thread::spawn(move || {
-            let observer = TuiObserver::new(tx);
+            let observer = TuiObserver::new(tx, observer_cancel);
             let _ = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
         });
         Ok(RunHandle {
@@ -127,6 +141,7 @@ impl Session {
             run_dir,
             rx,
             worker,
+            cancel,
         })
     }
 }
@@ -167,6 +182,7 @@ fn app_loop(
     session: Option<&Session>,
     mut rx: Option<Receiver<LiveMsg>>,
     mut worker: Option<JoinHandle<()>>,
+    mut cancel: Option<Arc<AtomicBool>>,
 ) -> io::Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| view::draw(frame, app))?;
@@ -175,6 +191,15 @@ fn app_loop(
             && let Event::Key(key) = event::read()?
         {
             handle_key(app, key, session.is_some());
+        }
+
+        // A stop request (Esc while live) sets the shared cancel flag; the worker halts at
+        // the next step boundary.
+        if app.take_stop_request()
+            && let Some(cancel) = &cancel
+        {
+            cancel.store(true, Ordering::Relaxed);
+            app.stopping = true;
         }
 
         if let Some(requirement) = app.take_submit()
@@ -186,6 +211,7 @@ fn app_loop(
                     app.begin_live(handle.run_id, handle.run_dir);
                     rx = Some(handle.rx);
                     worker = Some(handle.worker);
+                    cancel = Some(handle.cancel);
                 }
                 Err(err) => app.set_error(format!("could not start run: {err}")),
             }
@@ -195,6 +221,7 @@ fn app_loop(
             && drain(app, channel)
         {
             rx = None;
+            cancel = None;
             if let Some(worker) = worker.take() {
                 let _ = worker.join();
             }
@@ -213,6 +240,12 @@ fn handle_key(app: &mut App, key: KeyEvent, _can_launch: bool) {
         return;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // While a run is executing, Esc requests a stop (it halts at the next step boundary).
+    if app.live && key.code == KeyCode::Esc {
+        app.request_stop();
+        return;
+    }
 
     // Text editing happens on the home screen, or whenever the persistent prompt is
     // focused while browsing — so you can type a new requirement without leaving.

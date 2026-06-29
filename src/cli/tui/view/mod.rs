@@ -120,6 +120,9 @@ fn header_line(app: &App) -> Line<'static> {
             spans.push(Span::styled(format!("iteration {n}/{total} "), Style::new().fg(style::BRAND)));
         }
         spans.push(Span::styled(app.spinner_char(), Style::new().fg(style::BRAND)));
+        if app.stopping {
+            spans.push(Span::styled("  stopping…", Style::new().fg(style::FAIL)));
+        }
         return Line::from(spans);
     }
 
@@ -143,7 +146,7 @@ fn header_line(app: &App) -> Line<'static> {
 
 fn footer_line(app: &App) -> Line<'static> {
     let hints = if app.live {
-        " running… · ↑/↓ steps · a activity · d diff · ? help · q quit "
+        " running… · esc stop · ↑/↓ steps · a activity · d diff · q quit "
     } else if app.focus == super::app::Focus::Input {
         " type a requirement · ctrl+v paste image · / command · enter run · esc cancel "
     } else if app.can_launch {

@@ -365,8 +365,10 @@ loope run --tui "..."      # run one specific requirement full-screen
 - **Live** (`loope run --tui`) — the same layout with full `run` flags, updating as the
   loop runs: the active step streams the agent's **data flow** — each file read/edit, each
   command, the model in use, assistant messages, and a running token count — so you can
-  see exactly what Claude and Codex are doing. When the run converges it settles into the
-  browser, where `a` replays any finished step's recorded stream.
+  see exactly what Claude and Codex are doing. Press **Esc** to **stop** the run — it
+  halts at the next step boundary (the in-flight agent call finishes first, then the loop
+  stops with "stopped by user"). When the run converges it settles into the browser, where
+  `a` replays any finished step's recorded stream.
 
 On the **home** screen: type to edit the requirement, **Enter** to run it, **Tab** to
 browse past runs, **Esc** to quit. **Ctrl+V** pastes an image from the clipboard (macOS) —
