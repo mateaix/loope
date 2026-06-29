@@ -252,7 +252,7 @@ pub(crate) fn prompt_for_step(step: &LoopStep, requirement: &str) -> String {
             requirement
         ),
         Role::Reviewer => format!(
-            "You are the review agent using {}. Review the implementation for bugs, regressions, missing tests, and design consistency.\n\nRequirement:\n{}\n\nPut blocking findings first. End your review with a single final line that is exactly `VERDICT: PASS` if there are no blocking issues, or `VERDICT: BLOCK` if one or more blocking issues must be fixed.",
+            "You are the review agent using {}. Review the implementation for correctness bugs, regressions, security issues, broken or missing tests, and failures to meet the requirement.\n\nRequirement:\n{}\n\nBlock ONLY on objective defects — code that is wrong, will not compile, breaks or lacks tests, regresses behavior, or fails the requirement. Subjective or stylistic improvements (naming, taste, \"could be nicer\", larger redesigns the requirement didn't ask for) are NOT blockers: prefix each with `SUGGEST:` and let them pass. Put any blocking findings first. End your review with a single final line that is exactly `VERDICT: PASS` when there are no blocking defects (suggestions are fine), or `VERDICT: BLOCK` when one or more objective defects must be fixed.",
             step.adapter.display_name(),
             requirement
         ),

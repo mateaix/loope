@@ -155,7 +155,10 @@ The review phase is structured and can fan out across agents:
 
 - **Structured verdicts** — each reviewer ends with `VERDICT: PASS` or
   `VERDICT: BLOCK`, which Loope parses (for Codex, from its `--json` event stream /
-  last-message output). The blocker signal drives convergence: any `BLOCK` keeps the
+  last-message output). Reviewers block **only on objective defects** (wrong code,
+  compile/test failures, regressions, unmet requirement) and mark taste/style as
+  non-blocking `SUGGEST:` notes — so the loop converges on correctness, not opinion.
+  The blocker signal drives convergence: any `BLOCK` keeps the
   loop iterating, feeding that reviewer's findings into the next fix turn.
 - **Parallel reviewers** — `--reviewers codex,claude` runs both reviewers
   concurrently on the same change, each in its own workspace directory, and

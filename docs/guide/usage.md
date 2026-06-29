@@ -124,7 +124,10 @@ output** (where test failures land) is fed to the next iteration's implementer s
 fix the actual cause — bounded to keep the prompt small. With no command, verification is
 informational (treated as passing) and convergence rests on the reviewers' verdicts.
 Reviewers emit a structured verdict (`VERDICT: PASS` / `VERDICT: BLOCK`); any `BLOCK`
-keeps the loop iterating with that feedback.
+keeps the loop iterating with that feedback. Reviewers are told to **block only on
+objective defects** — wrong code, compile/test failures, regressions, or an unmet
+requirement — and to mark subjective/stylistic improvements as non-blocking `SUGGEST:`
+notes, so the loop converges on correctness rather than taste.
 
 **Workspace & artifacts.** Each run gets its own directory under `.loope/runs/<run-id>/`
 with a copied working tree and a numbered directory per step recording the exact prompt,
