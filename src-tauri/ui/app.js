@@ -386,9 +386,22 @@ function toast(msg) {
   toast._t = setTimeout(() => t.classList.remove("show"), 2600);
 }
 
+function applyTheme(t) {
+  const light = t === "light";
+  document.body.classList.toggle("light", light);
+  const b = $("theme");
+  if (b) b.textContent = light ? "☀" : "☾";
+  localStorage.setItem("loope.theme", light ? "light" : "dark");
+}
+function toggleTheme() {
+  applyTheme(document.body.classList.contains("light") ? "dark" : "light");
+}
+
 function wireCommandBar() {
   const gear = $("gear");
   if (gear) gear.onclick = gearToggle;
+  const theme = $("theme");
+  if (theme) theme.onclick = toggleTheme;
   const input = $("prompt");
   input.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
@@ -477,6 +490,7 @@ async function onRunFinished(p) {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
+  applyTheme(localStorage.getItem("loope.theme") || "dark");
   wireCommandBar();
   if (!TAURI) {
     $("empty").textContent = "Browser preview — agent/run data loads inside the desktop app.";

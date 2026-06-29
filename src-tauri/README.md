@@ -29,6 +29,7 @@ front-end is **vanilla** HTML/CSS/JS — no npm or bundler — served statically
   project with "+", full-text search across past runs (Shift+Enter).
 - **Run settings & presets** — the ⚙ popover edits the run options (agents, iterations,
   verify command, design step, dry-run) and saves named presets.
+- **Dark / light** — the ☾/☀ toggle switches themes (remembered across launches).
 
 ## Build & run
 
