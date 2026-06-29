@@ -1,0 +1,7 @@
+{
+  "id": "safe-div",
+  "lang": "python",
+  "requirement": "Implement `safe_div(a, b)` returning a / b, but 0 when b == 0 (it must not raise).",
+  "verify_cmd": "python3 -m pytest -q",
+  "trap": "A naive `a / b` raises ZeroDivisionError. The hidden test `safe_div(10, 0) == 0` forces a zero-divisor guard."
+}

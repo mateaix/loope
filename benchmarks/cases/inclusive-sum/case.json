@@ -1,0 +1,7 @@
+{
+  "id": "inclusive-sum",
+  "lang": "rust",
+  "requirement": "Implement `sum_to(n: u64) -> u64` returning the sum of all integers from 1 to n inclusive.",
+  "verify_cmd": "cargo test",
+  "trap": "An exclusive range `(1..n)` is off-by-one — it omits n. The hidden test `sum_to(5) == 15` forces an inclusive range."
+}

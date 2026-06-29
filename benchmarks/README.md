@@ -78,6 +78,14 @@ for the format.
 Two pools:
 
 - **Micro** — small Rust/Python tasks with a hermetic `verify_cmd` (fast, runnable anywhere).
+  Bundled traps:
+  - [`checked-multiply`](cases/checked-multiply/) (Rust) — i64 overflow must saturate.
+  - [`empty-average`](cases/empty-average/) (Rust) — divide-by-zero on an empty slice.
+  - [`inclusive-sum`](cases/inclusive-sum/) (Rust) — off-by-one exclusive range.
+  - [`safe-div`](cases/safe-div/) (Python/pytest) — unguarded `ZeroDivisionError`.
+
+  Each ships a hidden test that a plausible naive first pass fails, so the catch-and-fix
+  metric is meaningful. Add a case by dropping a `cases/<id>/` with `case.json` + `seed/`.
 - **SWE-bench Lite subset** — real GitHub issues whose hidden test patch is the oracle, the
   industry-standard external benchmark ([SWE-bench](https://github.com/SWE-bench/SWE-bench)).
 

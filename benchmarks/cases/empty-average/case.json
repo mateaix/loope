@@ -1,0 +1,7 @@
+{
+  "id": "empty-average",
+  "lang": "rust",
+  "requirement": "Implement `average(xs: &[i64]) -> i64` returning the integer mean of xs, and 0 for an empty slice (it must not panic).",
+  "verify_cmd": "cargo test",
+  "trap": "A naive `sum / xs.len()` divides by zero on an empty slice and panics. The hidden test `average(&[]) == 0` forces an empty-input guard."
+}
