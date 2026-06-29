@@ -422,13 +422,37 @@ streaming print feed).
 ## Loope Desktop (graphical app)
 
 Loope also has a graphical desktop app in the **Liquid Glass** style — a multi-agent hub
-that presents the loop's plan and the agents' execution content visually. It lives in
-[`src-tauri/`](../../src-tauri/) as a **separate, independently packaged** Tauri app: it has
-its own dependency tree and is excluded from the `loope` workspace, so the std-only core
-keeps `deps = 1` and the TUI and desktop app are built/deployed separately. Its backend is a
-thin layer over the same `loope::hub` core the CLI uses. Build and run instructions are in
-[`src-tauri/README.md`](../../src-tauri/README.md); the design is specified in
-[the desktop hub spec](../specs/2026-06-29-loope-desktop-hub-spec.md) and
+that presents the loop's plan and the agents' execution content visually. It is the TUI's
+capabilities re-expressed as glass, over the same `loope::hub` core.
+
+What it does:
+
+- **Multi-agent switcher** — the agent CLIs (Claude / Codex / OpenCode) shown with a brand
+  icon, availability ✓/✗, version, and an install hint when missing.
+- **Live runs** — type a requirement in the command bar and press **Enter**; the loop's plan
+  (an implement → review → verify pipeline) sits over a single scrollable transcript that
+  streams typed **cells** live — shell commands and their output, file diffs, assistant
+  markdown, reasoning, and notices. **Esc** stops the run (cooperatively, at the next step
+  boundary). A "caught & fixed" hero card appears when a reviewer's block is fixed later.
+- **Projects & sessions** — runs grouped by project; double-click a run to rename it, the
+  **+** on PROJECTS registers a directory, and **Shift+Enter** runs a full-text search across
+  past runs.
+- **Run settings & presets** — the **⚙** popover edits the run options (implementer,
+  reviewers, iterations, verify command, design step, dry-run) and saves named presets.
+- **Dark / light** — the **☾/☀** toggle switches themes (remembered across launches).
+
+It lives in [`src-tauri/`](../../src-tauri/) as a **separate, independently packaged** Tauri
+app: it has its own dependency tree and is excluded from the `loope` workspace, so the
+std-only core keeps `deps = 1` and the TUI and desktop app are built/deployed separately.
+Build and run:
+
+```bash
+cargo install tauri-cli --version '^2'
+cd src-tauri && cargo tauri dev
+```
+
+Full build/run notes are in [`src-tauri/README.md`](../../src-tauri/README.md); the design is
+specified in [the desktop hub spec](../specs/2026-06-29-loope-desktop-hub-spec.md) and
 [the Liquid Glass design spec](../specs/2026-06-29-loope-liquid-glass-design-spec.md).
 
 ## Convergence highlight

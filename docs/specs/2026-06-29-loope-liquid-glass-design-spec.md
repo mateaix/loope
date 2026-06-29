@@ -51,8 +51,11 @@ Light & depth:
 
 Color:
 
-- **Base scene:** a dark depth field (blurred brand-hued blobs) so glass refraction reads;
-  a light theme uses a bright frosted field. Both are adaptive.
+- **Base scene:** a dark depth field (a soft, mostly-dark radial gradient with faint
+  brand-hued glows) so glass refraction reads; a light theme uses a bright frosted field.
+  The themeable values are CSS tokens on `:root` (dark) with a `body.light` override, and a
+  **☾/☀ toggle** switches and remembers the theme. Accent used *as text* has its own token
+  (a darker blue in light) so code and links stay legible on white.
 - **Brand accent / tint:** Loope blue (`#7FB4FF` family) — the active run, the running node,
   the command prompt. Used as a low-alpha `color-mix` tint, not a solid fill.
 - **Agent colors** (match the TUI): Claude blue `#5BA8FF`, Codex orange `#FF9F45`, OpenCode

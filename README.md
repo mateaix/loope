@@ -242,6 +242,31 @@ library stay dependency-free** (std only). `./install.sh --no-tui` builds the mi
 there, `loope run` works as always and the TUI commands print a hint. See the
 [usage guide](docs/guide/usage.md#interactive-tui).
 
+## Desktop app (optional)
+
+Loope also has a graphical desktop app in the **Liquid Glass** style — a multi-agent hub
+that presents the loop's plan and the agents' execution content visually:
+
+- a **multi-agent switcher** (detected CLIs with version + install hints),
+- **live runs** — type a requirement and watch the pipeline + a scrollable transcript of
+  typed cells (exec / diff / markdown / reasoning) stream in; **Esc** stops,
+- **projects & sessions** — runs grouped by project, rename, register, full-text search,
+- **run settings & presets**, and a **dark / light** toggle.
+
+It lives in [`src-tauri/`](src-tauri/) as a **separate, independently packaged** Tauri app:
+its own dependency tree, excluded from the `loope` workspace, so the std-only core keeps
+`deps = 1` and the TUI and desktop app are built/deployed separately. Its backend is a thin
+layer over the same `loope::hub` core. Build and run:
+
+```bash
+cargo install tauri-cli --version '^2'
+cd src-tauri && cargo tauri dev
+```
+
+See [`src-tauri/README.md`](src-tauri/README.md) for details, the
+[desktop hub spec](docs/specs/2026-06-29-loope-desktop-hub-spec.md), and the
+[Liquid Glass design spec](docs/specs/2026-06-29-loope-liquid-glass-design-spec.md).
+
 ## Supported adapters
 
 | Adapter     | Role                                | Binary (override env)        |
