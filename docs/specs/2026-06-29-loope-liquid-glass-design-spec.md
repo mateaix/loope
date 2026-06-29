@@ -53,6 +53,10 @@ Color:
   the command prompt. Used as a low-alpha `color-mix` tint, not a solid fill.
 - **Agent colors** (match the TUI): Claude blue `#5BA8FF`, Codex orange `#FF9F45`, OpenCode
   violet `#C08CFF`.
+- **Agent icons:** each tool carries a small monochrome **brand glyph** (inline SVG) tinted
+  to its agent color with a soft glow, shown in its switcher chip and wherever the agent is
+  named (pipeline node, step author). A neutral fallback glyph covers any future tool, and a
+  dashed `+` chip affords adding one — so the registry stays visibly extensible.
 - **Semantics:** ok/converged green `#43E08F`, blocker/failed red `#FF6B6B`, reasoning
   violet, dim text via white-alpha tiers.
 
@@ -72,9 +76,9 @@ Every desktop surface is a TUI capability restyled; behavior and vocabulary are 
 
 | TUI today | Desktop surface (glass) | Inherited behavior |
 | --- | --- | --- |
-| Home prompt (`loope`) | **Command bar** — a floating `--glass-panel` pill, `⌘K` to focus | type a requirement → run; same default `LoopConfig` |
+| Home prompt (`loope`) | **Command bar** — a `--glass-panel` bar **docked at the bottom of the window** (a focusable prompt pill + `⌘K`); it is part of the layout, never floats over the cells | type a requirement → run; same default `LoopConfig` |
 | `/` slash palette | **Command palette** in the command bar | the same commands (`/iters`, `/preset`, `/implementer`, `/reviewers`, `/verify`, …) |
-| Agents status line | **Agent switcher** — tinted chips in the title bar (✓/✗/version) | pick implementer + reviewer roles; install hint when missing |
+| Agents status line | **Agent switcher** — tinted chips in the title bar, each with the **tool's brand icon** + ✓/✗/version and a switch caret | pick implementer + reviewer roles; install hint when missing |
 | Workspace line (📁 path · ⎇ branch) | **Title bar context** | same project path + git branch/worktree |
 | Run list (left pane) | **Runs sidebar** — glass list, selected = `--glass-raise` | up/down select; grouped by project |
 | Detail steps grouped by iteration | **Pipeline panel** — implement→review→verify nodes + iteration badge | the same steps/iterations; live node tinted + pulsing |
