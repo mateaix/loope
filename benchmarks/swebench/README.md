@@ -32,6 +32,23 @@ python3 import.py --instances lite.jsonl --limit 20      # → ../cases/swe-*/
 ../deliver.sh --preset claude-codex --single-shot   # ablation baseline
 ```
 
+## Official Docker evaluation (the source-of-record verdict)
+
+For publishable, reproducible numbers, evaluate Loope's fixes with the **official `swebench`
+harness in Docker** rather than a local pinned env. The flow:
+
+1. run loope on a clone @ base_commit (with the test_patch applied so loope can verify),
+2. extract the **source-only** diff vs base_commit as `model_patch` (the harness applies the
+   gold test_patch itself, so exclude test files),
+3. write `predictions.jsonl` lines `{instance_id, model_name_or_path, model_patch}`,
+4. evaluate: [`eval.sh predictions.jsonl <run_id>`](eval.sh) → builds the per-instance image,
+   applies the patch + gold tests, and reports `resolved_ids`.
+
+**Confirmed result:** loope's loop-produced fix for `pallets__flask-4045` was evaluated by
+the official harness and **officially RESOLVED** (`resolved_instances: 1`). See
+[`../results/2026-06-29-swebench-flask-4045.md`](../results/2026-06-29-swebench-flask-4045.md)
+and the patch [`../results/swebench-flask-4045.patch`](../results/swebench-flask-4045.patch).
+
 ## Caveat — environment is the source of record
 
 Faithful evaluation needs each repo's **environment** (its Python dependencies, sometimes a

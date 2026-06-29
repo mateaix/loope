@@ -27,14 +27,30 @@ environment needed the predicted per-instance pinning (`werkzeug==2.2.3`, `marku
   fix** → both `FAIL_TO_PASS` pass, `PASS_TO_PASS` stay green → **converged, resolved.** The
   run recorded a `highlight` (`catch_and_fix=true`) — the "caught & fixed" moment.
 
+## Official Docker verdict — RESOLVED ✅
+
+Loope's loop-produced fix was extracted as a source-only prediction
+([`swebench-flask-4045.patch`](swebench-flask-4045.patch)) and run through the **official
+`swebench` harness in Docker** (the canonical oracle, not our ad-hoc pinned env):
+
+```json
+{ "submitted_instances": 1, "completed_instances": 1,
+  "resolved_instances": 1, "unresolved_instances": 0,
+  "resolved_ids": ["pallets__flask-4045"] }
+```
+
+So the win is **officially reproducible**, not an artifact of our local environment.
+
 ## Conclusion
 
 On a real GitHub issue, **the review loop resolved what a single shot could not** — at ~2×
-tokens and one extra iteration — and the win is **directly attributable to the verify→repair
-cycle** (`catch_and_fix=true`). This is the regime the micro traps were too easy to reach
-(Claude solved those single-shot 100%): the loop's value shows up exactly when the first
-attempt is plausible-but-wrong and a gate catches it.
+tokens and one extra iteration — the win is **directly attributable to the verify→repair
+cycle** (`catch_and_fix=true`), and it is **confirmed by the official SWE-bench Docker
+harness**. This is the regime the micro traps were too easy to reach (Claude solved those
+single-shot 100%): the loop's value shows up exactly when the first attempt is
+plausible-but-wrong and a gate catches it.
 
-> One instance is an anecdote, not a rate — a published number needs many instances in the
-> official Dockerized environment. But end-to-end, on real data, the thesis holds: **the
-> harness's catch-and-fix loop turns an unresolved single shot into a resolved fix.**
+> One instance is an anecdote, not a rate — a published number needs many instances. But
+> end-to-end, on real data and the official oracle, the thesis holds: **the harness's
+> catch-and-fix loop turns an unresolved single shot into a resolved, officially-verified
+> fix.**
