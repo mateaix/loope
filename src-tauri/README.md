@@ -39,19 +39,20 @@ nothing extra on macOS/Windows), and the Tauri CLI:
 cargo install tauri-cli --version '^2'
 ```
 
-Generate the app icons once (see `icons/README.md`):
+Run it:
 
 ```bash
 cd src-tauri
-cargo tauri icon path/to/logo.png
+cargo tauri dev      # run in development — no icons required
 ```
 
-Then:
+**Icons are optional for development** (`bundle.icon` is empty, so the app uses a default
+window icon). You only need to generate them before producing a distributable bundle:
 
 ```bash
-cd src-tauri
-cargo tauri dev      # run in development
-cargo tauri build    # produce a distributable bundle
+cargo tauri icon path/to/logo.png   # writes icons/… (see icons/README.md)
+# then add those paths back into bundle.icon in tauri.conf.json, and:
+cargo tauri build
 ```
 
 ## Layout
