@@ -132,7 +132,7 @@ fn render_palette(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .block(Block::new().title(Span::styled(" commands ", Style::new().fg(style::BRAND))))
-        .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(30, 35, 45)))
+        .highlight_style(style::selection())
         .highlight_symbol("▸ ");
     let mut state = ListState::default();
     if !app.palette().is_empty() {

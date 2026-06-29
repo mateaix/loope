@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .block(pane_block("runs", focused))
-        .highlight_style(Style::new().fg(style::BRAND).bg(ratatui::style::Color::Rgb(30, 35, 45)))
+        .highlight_style(style::selection())
         .highlight_symbol("▸ ");
 
     let mut state = ListState::default();

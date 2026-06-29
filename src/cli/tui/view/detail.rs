@@ -45,7 +45,7 @@ fn render_steps(frame: &mut Frame, app: &App, detail: &super::super::model::RunD
     let title = format!("detail · {}", detail.id);
     let list = List::new(items)
         .block(pane_block(&title, focused))
-        .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(30, 35, 45)))
+        .highlight_style(style::selection())
         .highlight_symbol("▸ ");
 
     let mut state = ListState::default();
