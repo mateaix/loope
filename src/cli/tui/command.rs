@@ -1,8 +1,6 @@
 //! The slash-command vocabulary for the home prompt. Parsing is decoupled from the app:
 //! [`parse`] turns a typed line into a [`Command`]; [`matches`] powers the palette.
 
-use std::path::PathBuf;
-
 use loope::Adapter;
 
 /// A parsed slash command.
@@ -16,8 +14,6 @@ pub enum Command {
     Verify(Option<String>),
     ToggleDesign,
     ToggleDry,
-    /// Attach an image file to the next run.
-    Image(PathBuf),
     Apply,
     Browse,
     Doctor,
@@ -40,7 +36,6 @@ pub const SPECS: &[Spec] = &[
     Spec { name: "verify", args: "[CMD]", help: "verifier command (empty clears)" },
     Spec { name: "design", args: "", help: "toggle the design step" },
     Spec { name: "dry", args: "", help: "toggle stub agents" },
-    Spec { name: "image", args: "PATH", help: "attach an image to the next run" },
     Spec { name: "apply", args: "", help: "apply the selected run's changes" },
     Spec { name: "browse", args: "", help: "open the run browser" },
     Spec { name: "doctor", args: "", help: "re-check the local agent CLIs" },
@@ -97,13 +92,6 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "verify" => Ok(Command::Verify((!rest.is_empty()).then(|| rest.to_string()))),
         "design" => Ok(Command::ToggleDesign),
         "dry" | "dry-run" => Ok(Command::ToggleDry),
-        "image" | "img" => {
-            if rest.is_empty() {
-                Err("usage: /image PATH".to_string())
-            } else {
-                Ok(Command::Image(PathBuf::from(expand_tilde(rest))))
-            }
-        }
         "apply" => Ok(Command::Apply),
         "browse" | "runs" => Ok(Command::Browse),
         "doctor" | "check" => Ok(Command::Doctor),
@@ -115,17 +103,6 @@ pub fn parse(line: &str) -> Result<Command, String> {
 
 fn adapter(name: &str) -> Result<Adapter, String> {
     Adapter::parse(name).ok_or_else(|| format!("unknown adapter: {name}"))
-}
-
-/// Expand a leading `~/` to the user's home directory.
-fn expand_tilde(path: &str) -> String {
-    match path.strip_prefix("~/") {
-        Some(rest) => match std::env::var_os("HOME") {
-            Some(home) => format!("{}/{}", home.to_string_lossy(), rest),
-            None => path.to_string(),
-        },
-        None => path.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -155,13 +132,6 @@ mod tests {
         assert_eq!(parse("/apply"), Ok(Command::Apply));
         assert_eq!(parse("/browse"), Ok(Command::Browse));
         assert_eq!(parse("/quit"), Ok(Command::Quit));
-    }
-
-    #[test]
-    fn parses_image_command() {
-        assert_eq!(parse("/image /tmp/a.png"), Ok(Command::Image(PathBuf::from("/tmp/a.png"))));
-        assert_eq!(parse("/img b.jpg"), Ok(Command::Image(PathBuf::from("b.jpg"))));
-        assert!(parse("/image").is_err());
     }
 
     #[test]

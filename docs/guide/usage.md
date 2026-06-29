@@ -369,7 +369,10 @@ loope run --tui "..."      # run one specific requirement full-screen
   browser, where `a` replays any finished step's recorded stream.
 
 On the **home** screen: type to edit the requirement, **Enter** to run it, **Tab** to
-browse past runs, **Esc** to quit. In the **browser / live** views:
+browse past runs, **Esc** to quit. **Ctrl+V** pastes an image from the clipboard (macOS) —
+it is copied into the run's workspace and referenced in the prompt so Claude/Codex open it
+with their file tools (or pastes clipboard text when there's no image). In the
+**browser / live** views:
 
 | Key | Action |
 | --- | --- |
@@ -401,7 +404,6 @@ configuration.
 | `/verify CMD` | set the verifier command (no argument clears it) |
 | `/design` | toggle the design-contract step |
 | `/dry` | toggle stub agents (no real CLIs) |
-| `/image PATH` | attach an image to the next run (copied into the workspace; the agents open it with their file tools) |
 | `/apply` | copy the selected run's changes into the working tree |
 | `/browse` | open the run browser |
 | `/doctor` | re-check the local agent CLIs |

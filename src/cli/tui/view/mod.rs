@@ -145,7 +145,7 @@ fn footer_line(app: &App) -> Line<'static> {
     let hints = if app.live {
         " running… · ↑/↓ steps · a activity · d diff · ? help · q quit "
     } else if app.focus == super::app::Focus::Input {
-        " type a requirement · / command · enter run · esc cancel "
+        " type a requirement · ctrl+v paste image · / command · enter run · esc cancel "
     } else if app.can_launch {
         " ↑/↓ move · → open · i new requirement · a activity · d diff · ? help · q quit "
     } else {

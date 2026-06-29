@@ -208,17 +208,16 @@ impl App {
         };
     }
 
-    /// Attach an image file to the next run (via `/image <path>`).
-    fn attach_image(&mut self, path: PathBuf) {
-        if path.is_file() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
+    /// Paste from the system clipboard (Ctrl+V): attach an image if the clipboard holds
+    /// one, otherwise insert its text into the prompt.
+    pub fn paste_clipboard(&mut self) {
+        if let Some(path) = super::clipboard::grab_image() {
             self.attachments.push(path);
-            self.note(format!("attached {name}"));
-        } else {
-            self.note(format!("no such image: {}", path.display()));
+            self.note("📎 image pasted from clipboard".to_string());
+        } else if let Some(text) = super::clipboard::grab_text() {
+            self.error = None;
+            self.message = None;
+            self.input.push_str(text.replace(['\n', '\r'], " ").trim_end());
         }
     }
 
@@ -321,7 +320,6 @@ impl App {
                 self.options.dry_run = !self.options.dry_run;
                 self.note(format!("dry-run {}", on_off(self.options.dry_run)));
             }
-            Command::Image(path) => self.attach_image(path),
             Command::Apply => self.apply_selected_run(),
             Command::Doctor => {
                 self.agents = check_adapters();

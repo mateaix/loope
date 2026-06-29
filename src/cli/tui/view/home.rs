@@ -215,7 +215,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(style::DIM),
         ))
     } else {
-        let mut hints = " Enter run · / command".to_string();
+        let mut hints = " Enter run · ctrl+v paste image · / command".to_string();
         if !app.runs.is_empty() {
             hints.push_str(" · Tab browse");
         }

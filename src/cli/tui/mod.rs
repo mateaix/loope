@@ -7,6 +7,7 @@
 
 mod action;
 mod app;
+mod clipboard;
 mod command;
 mod config;
 mod model;
@@ -233,6 +234,7 @@ fn handle_key(app: &mut App, key: KeyEvent, _can_launch: bool) {
         match key.code {
             KeyCode::Enter => app.input_submit(),
             KeyCode::Backspace => app.input_backspace(),
+            KeyCode::Char('v') if ctrl => app.paste_clipboard(), // paste image or text
             KeyCode::Char('c') if ctrl => app.should_quit = true,
             KeyCode::Esc if app.screen == Screen::Home => app.should_quit = true,
             KeyCode::Esc => app.leave_input(),
@@ -245,11 +247,16 @@ fn handle_key(app: &mut App, key: KeyEvent, _can_launch: bool) {
         return;
     }
 
-    // Browsing: `i` focuses the prompt; `esc` returns to the home screen.
+    // Browsing: `i` (or Ctrl+V) focuses the prompt; `esc` returns to the home screen.
     if app.can_launch && app.screen == Screen::Browse {
         match key.code {
             KeyCode::Char('i') => {
                 app.focus_input();
+                return;
+            }
+            KeyCode::Char('v') if ctrl => {
+                app.focus_input();
+                app.paste_clipboard();
                 return;
             }
             KeyCode::Esc => {
