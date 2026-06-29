@@ -25,8 +25,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     let big = area.height >= 20;
     let banner_height = if big { 8 } else { 1 };
 
-    let [banner, agents, status, body, input, footer] = Layout::vertical([
+    let [banner, workspace, agents, status, body, input, footer] = Layout::vertical([
         Constraint::Length(banner_height),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
@@ -40,6 +41,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         render_header(frame, banner);
     }
+    frame.render_widget(super::workspace_line(app), workspace);
     render_agents(frame, app, agents);
     render_status(frame, app, status);
     if app.command_mode() {

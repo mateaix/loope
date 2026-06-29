@@ -432,6 +432,24 @@ mod tests {
     }
 
     #[test]
+    fn workspace_context_reads_git_branch() {
+        static C: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "loope-gitws-{}-{}",
+            std::process::id(),
+            C.fetch_add(1, Ordering::Relaxed)
+        ));
+        let runs = root.join(".loope").join("runs");
+        fs::create_dir_all(&runs).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
+        let app = App::new(&runs);
+        assert_eq!(app.branch.as_deref(), Some("feature-x"));
+        assert!(app.worktree.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn browse_has_a_persistent_prompt() {
         let dir = temp_runs();
         let mut app = App::home(&dir, true); // can_launch

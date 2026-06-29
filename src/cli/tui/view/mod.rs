@@ -26,7 +26,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         return;
     }
 
-    let [header, body, footer] = Layout::vertical([
+    let [header, context, body, footer] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
@@ -34,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     frame.render_widget(header_line(app), header);
+    frame.render_widget(workspace_line(app), context);
 
     // A persistent prompt lives below the browser so you can launch a new run without
     // returning to the home screen.
@@ -87,6 +89,25 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
         let cursor_x = inner.x.saturating_add(2).saturating_add(typed);
         frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), inner.y));
     }
+}
+
+/// The workspace context: project path · git branch · worktree.
+pub(super) fn workspace_line(app: &App) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(" 📁 ", Style::new().fg(style::DIM)),
+        Span::styled(app.project_path.clone(), Style::new().fg(style::DIM)),
+    ];
+    if let Some(branch) = &app.branch {
+        spans.push(Span::styled("  ⎇ ", Style::new().fg(style::DIM)));
+        spans.push(Span::styled(branch.clone(), Style::new().fg(style::PASS)));
+    }
+    if let Some(worktree) = &app.worktree {
+        spans.push(Span::styled(
+            format!("  ⟂ worktree: {worktree}"),
+            Style::new().fg(style::CODEX),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn header_line(app: &App) -> Line<'static> {

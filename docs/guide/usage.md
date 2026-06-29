@@ -339,6 +339,10 @@ behind a `tui` cargo feature; `./install.sh` enables it by default, while the **
 cargo run --features tui      # from source
 ```
 
+Every screen shows a **workspace line** — `📁 <project path>  ⎇ <git branch>` (and the
+worktree name when you're in a linked git worktree) — so you always know which checkout a
+run belongs to.
+
 Three entry points:
 
 ```bash

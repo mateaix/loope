@@ -61,6 +61,12 @@ pub struct App {
     pub message: Option<String>,
     /// Local availability of the agent CLIs, self-checked on entering the home screen.
     pub agents: Vec<AdapterStatus>,
+    /// The project directory this run history belongs to (abbreviated for display).
+    pub project_path: String,
+    /// The git branch of the project, if it is a repo.
+    pub branch: Option<String>,
+    /// The linked worktree name, if the project is a git worktree.
+    pub worktree: Option<String>,
     /// Whether this app can launch runs (home/session). Drives the persistent prompt.
     pub can_launch: bool,
     /// Image paths attached to the next run (via `/image`).
@@ -121,7 +127,17 @@ impl App {
     }
 
     fn empty(base: PathBuf) -> Self {
+        // The project root holds `.loope/runs/` — i.e. base.parent().parent().
+        let root = base
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(&base)
+            .to_path_buf();
+        let (branch, worktree) = git_context(&root);
         Self {
+            project_path: abbrev_path(&root),
+            branch,
+            worktree,
             base,
             screen: Screen::Browse,
             input: String::new(),
@@ -590,4 +606,52 @@ fn preset(name: &str) -> Option<(Adapter, Vec<Adapter>)> {
 
 fn on_off(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
+}
+
+/// Read the project's git branch and (if it is a linked worktree) the worktree name,
+/// straight from `.git` — no `git` subprocess. Returns `(None, None)` when not a repo.
+fn git_context(root: &Path) -> (Option<String>, Option<String>) {
+    let dot_git = root.join(".git");
+    let (gitdir, worktree) = if dot_git.is_dir() {
+        (dot_git, None)
+    } else if dot_git.is_file() {
+        // A linked worktree: `.git` is a file `gitdir: <path>/worktrees/<name>`.
+        let Ok(contents) = std::fs::read_to_string(&dot_git) else {
+            return (None, None);
+        };
+        let Some(path) = contents.lines().find_map(|l| l.strip_prefix("gitdir:")) else {
+            return (None, None);
+        };
+        let gitdir = PathBuf::from(path.trim());
+        let name = gitdir.file_name().map(|n| n.to_string_lossy().into_owned());
+        (gitdir, name)
+    } else {
+        return (None, None);
+    };
+
+    let branch = std::fs::read_to_string(gitdir.join("HEAD"))
+        .ok()
+        .and_then(|head| {
+            let head = head.trim();
+            if let Some(name) = head.strip_prefix("ref: refs/heads/") {
+                Some(name.to_string())
+            } else if head.len() >= 7 {
+                Some(format!("{}…", &head[..7])) // detached HEAD: short sha
+            } else {
+                None
+            }
+        });
+    (branch, worktree)
+}
+
+/// Abbreviate the home directory to `~` for display.
+fn abbrev_path(path: &Path) -> String {
+    let shown = path.display().to_string();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = home.to_string_lossy();
+        if let Some(rest) = shown.strip_prefix(home.as_ref()) {
+            return format!("~{rest}");
+        }
+    }
+    shown
 }
