@@ -88,6 +88,9 @@ Two pools:
   metric is meaningful. Add a case by dropping a `cases/<id>/` with `case.json` + `seed/`.
 - **SWE-bench Lite subset** — real GitHub issues whose hidden test patch is the oracle, the
   industry-standard external benchmark ([SWE-bench](https://github.com/SWE-bench/SWE-bench)).
+  [`swebench/import.py`](swebench/) materializes instances (clone @ base_commit + apply the
+  hidden test_patch + a `FAIL_TO_PASS`/`PASS_TO_PASS` `verify_cmd`) into `cases/swe-*/` that
+  flow through `deliver.sh` unchanged. See [`swebench/README.md`](swebench/README.md).
 
 ---
 
