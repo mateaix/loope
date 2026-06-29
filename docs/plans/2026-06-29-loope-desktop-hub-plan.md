@@ -15,9 +15,11 @@ Convention reminder: after any change to commands/flags/options/run-dir layout, 
 
 Restructure into a Cargo workspace and stand up the shared brain.
 
-- Convert the repo to a workspace: move the current crate to `crates/loope/` (lib + `loope`
-  bin unchanged); add a root workspace `Cargo.toml`. Verify the CLI/TUI build, test, and
-  install exactly as before; `deps` for `loope` stays 1.
+- Establish the workspace **without moving files**: add a `[workspace]` table to the
+  existing root `Cargo.toml`, so the `loope` crate at the repo root *is* the workspace root
+  (a root-package workspace; the desktop app joins later as `apps/desktop`, depending on
+  `loope` by path). Verify the CLI/TUI build, test, and `cargo install --path .` exactly as
+  before; `deps` for `loope` stays 1.
 - Add the `loope::hub` module group with:
   - `registry.rs` — `AgentDescriptor`, `Capabilities` bitset, `AgentRegistry` with cached
     `detect()` (availability + version), generalizing today's `doctor` probing.

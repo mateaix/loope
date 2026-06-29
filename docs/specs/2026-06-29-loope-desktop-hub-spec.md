@@ -68,13 +68,14 @@ engine and the core stay UI-agnostic; the desktop app subscribes to the stream j
 ### Workspace layout (the elegant split)
 
 Loope becomes a small **Cargo workspace** so the desktop app can depend on the core without
-contaminating the core's dependencies:
+contaminating the core's dependencies. The existing `loope` crate stays at the repo root and
+*is* the workspace root (a root-package workspace — no files move); the desktop app joins as
+a member that depends on `loope` by path:
 
 ```text
-loope/                         workspace root
-  crates/
-    loope/                     the existing library + `loope` CLI binary — std only, deps = 1
-                               (engine · adapters · model · cli · the new `hub` module group)
+loope/                         workspace root = the `loope` crate (std only, deps = 1)
+  src/                         engine · adapters · model · cli · the new `hub` module group
+  Cargo.toml                   [package] loope + [workspace]
   apps/
     desktop/                   the desktop application — its own dependency tree
       src-backend/             thin native backend: depends on `loope` (path dep), exposes
@@ -95,7 +96,7 @@ All hub capability is implemented in the core as a new module group, UI-agnostic
 dependency-free, so the GUI backend stays thin and the logic stays testable:
 
 ```text
-crates/loope/src/hub/
+src/hub/
   registry.rs    AgentRegistry: descriptors, detection (version + availability), capabilities,
                  install hints. Generalizes today's CLI probing into a queryable registry.
   project.rs     Project model: a source path + its aggregated runs (sessions); discovery.

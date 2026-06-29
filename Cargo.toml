@@ -21,3 +21,8 @@ tui = ["dep:ratatui"]
 
 [dependencies]
 ratatui = { version = "0.30", optional = true }
+
+# This package is also the workspace root. The std-only `loope` crate stays the sole
+# member for now; the desktop application joins as `apps/desktop` (its own dependency
+# tree) without touching this crate's dependencies.
+[workspace]

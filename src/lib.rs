@@ -9,6 +9,7 @@
 
 pub mod adapter;
 pub mod engine;
+pub mod hub;
 pub mod model;
 
 pub use model::{
