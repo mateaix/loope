@@ -33,6 +33,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Source layout (domain-grouped modules: `model` / `adapter` / `engine` / `cli`)
 - Interactive TUI (ratatui browser + live dashboard, behind the optional `tui` feature)
 - TUI slash commands (a `/` palette to configure runs and invoke tools)
+- Convergence highlight (the "caught & fixed" card — reviewer blocks, next iteration fixes)
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
 > run-directory detail changes, update [`guide/usage.md`](guide/usage.md) (and the

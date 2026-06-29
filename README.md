@@ -2,7 +2,9 @@
 
 <img src="assets/loope-logo.png" alt="Loope" width="460">
 
-**Loop Engineering orchestrator for collaborative coding agents.**
+**Two AIs. One writes, one reviews. They argue until the code is right — you just hit enter.**
+
+<sub>Loop Engineering orchestrator for collaborative coding agents.</sub>
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2024-orange.svg?logo=rust)](https://www.rust-lang.org)
@@ -310,6 +312,7 @@ rationale.
 - [Source Layout Spec](docs/specs/2026-06-29-loope-source-layout-spec.md)
 - [TUI Spec](docs/specs/2026-06-29-loope-tui-spec.md)
 - [TUI Slash Commands Spec](docs/specs/2026-06-29-loope-tui-commands-spec.md)
+- [Convergence Highlight Spec](docs/specs/2026-06-29-loope-convergence-highlight-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
@@ -317,6 +320,7 @@ rationale.
 - [Source Layout Plan](docs/plans/2026-06-29-loope-source-layout-plan.md)
 - [TUI Plan](docs/plans/2026-06-29-loope-tui-plan.md)
 - [TUI Slash Commands Plan](docs/plans/2026-06-29-loope-tui-commands-plan.md)
+- [Convergence Highlight Plan](docs/plans/2026-06-29-loope-convergence-highlight-plan.md)
 
 ## License
 
