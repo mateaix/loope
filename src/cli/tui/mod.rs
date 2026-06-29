@@ -14,6 +14,7 @@ mod observer;
 mod style;
 mod view;
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -28,7 +29,7 @@ use loope::engine::workspace::RunWorkspace;
 use loope::engine::{LoopConfig, execute_loop};
 
 use action::action_from_key;
-use app::{App, Screen};
+use app::{App, Focus, Screen};
 use config::RunOptions;
 use observer::{LiveMsg, TuiObserver};
 
@@ -101,11 +102,18 @@ impl Session {
     }
 
     /// Start a run for `requirement` on a worker thread per `options`, returning its live
-    /// channel.
-    fn start(&self, requirement: String, options: &RunOptions) -> io::Result<RunHandle> {
+    /// channel. Attached images are copied into the workspace and referenced in the prompt
+    /// so the agents can read them with their file tools.
+    fn start(
+        &self,
+        requirement: String,
+        options: &RunOptions,
+        attachments: &[PathBuf],
+    ) -> io::Result<RunHandle> {
         let workspace = RunWorkspace::create(&self.base, &self.cwd, false, &requirement)?;
         let run_id = workspace.run_id.clone();
         let run_dir = workspace.root.clone();
+        let requirement = attach_images(&workspace.workspace_dir, requirement, attachments);
         let config = options.config(requirement);
         let invoker = options.make_invoker();
         let (tx, rx) = mpsc::channel();
@@ -120,6 +128,34 @@ impl Session {
             worker,
         })
     }
+}
+
+/// Copy attached images into `<workspace>/attached/` and append a reference to the
+/// requirement so the agents open them with their file/read tools.
+fn attach_images(workspace_dir: &Path, requirement: String, attachments: &[PathBuf]) -> String {
+    if attachments.is_empty() {
+        return requirement;
+    }
+    let dir = workspace_dir.join("attached");
+    let _ = fs::create_dir_all(&dir);
+    let mut refs = Vec::new();
+    for (i, src) in attachments.iter().enumerate() {
+        let name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("image-{i}"));
+        if fs::copy(src, dir.join(&name)).is_ok() {
+            refs.push(format!("attached/{name}"));
+        }
+    }
+    if refs.is_empty() {
+        return requirement;
+    }
+    format!(
+        "{requirement}\n\nAttached image(s) saved in this workspace — open them with your \
+         file/read tools and use them: {}",
+        refs.join(", ")
+    )
 }
 
 /// The one event loop shared by every entry point: draw, read a key (text input on the
@@ -143,7 +179,8 @@ fn app_loop(
         if let Some(requirement) = app.take_submit()
             && let Some(session) = session
         {
-            match session.start(requirement, &app.options) {
+            let attachments = app.take_attachments();
+            match session.start(requirement, &app.options, &attachments) {
                 Ok(handle) => {
                     app.begin_live(handle.run_id, handle.run_dir);
                     rx = Some(handle.rx);
@@ -170,15 +207,16 @@ fn app_loop(
 }
 
 /// Interpret a key for the current screen. Returns nothing; mutates the app.
-fn handle_key(app: &mut App, key: KeyEvent, can_launch: bool) {
+fn handle_key(app: &mut App, key: KeyEvent, _can_launch: bool) {
     if key.kind == KeyEventKind::Release {
         return;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    if app.screen == Screen::Home {
+    // Text editing happens on the home screen, or whenever the persistent prompt is
+    // focused while browsing — so you can type a new requirement without leaving.
+    if app.screen == Screen::Home || app.focus == Focus::Input {
         if app.command_mode() {
-            // Slash-command palette: navigate, complete, run, or leave command mode.
             match key.code {
                 KeyCode::Char('c') if ctrl => app.should_quit = true,
                 KeyCode::Up => app.palette_move(false),
@@ -195,19 +233,31 @@ fn handle_key(app: &mut App, key: KeyEvent, can_launch: bool) {
         match key.code {
             KeyCode::Enter => app.input_submit(),
             KeyCode::Backspace => app.input_backspace(),
-            KeyCode::Esc => app.should_quit = true,
             KeyCode::Char('c') if ctrl => app.should_quit = true,
-            KeyCode::Tab if !app.runs.is_empty() => app.toggle_home_browse(),
+            KeyCode::Esc if app.screen == Screen::Home => app.should_quit = true,
+            KeyCode::Esc => app.leave_input(),
+            KeyCode::Tab if app.screen == Screen::Home && !app.runs.is_empty() => {
+                app.toggle_home_browse()
+            }
             KeyCode::Char(c) if !ctrl => app.input_char(c),
             _ => {}
         }
         return;
     }
 
-    // Browse/Live: Esc returns to the prompt when this session can launch runs.
-    if can_launch && app.screen == Screen::Browse && key.code == KeyCode::Esc {
-        app.toggle_home_browse();
-        return;
+    // Browsing: `i` focuses the prompt; `esc` returns to the home screen.
+    if app.can_launch && app.screen == Screen::Browse {
+        match key.code {
+            KeyCode::Char('i') => {
+                app.focus_input();
+                return;
+            }
+            KeyCode::Esc => {
+                app.toggle_home_browse();
+                return;
+            }
+            _ => {}
+        }
     }
     if let Some(action) = action_from_key(key) {
         app.update(action);
@@ -378,6 +428,23 @@ mod tests {
         let text = buffer_text(&terminal);
         assert!(text.contains("commands"));
         assert!(text.contains("/iters"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn browse_has_a_persistent_prompt() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir, true); // can_launch
+        app.toggle_home_browse(); // switch to the browser
+        app.focus_input();
+        for c in "next task".chars() {
+            app.input_char(c);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| view::draw(frame, &app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("next task")); // the prompt is usable while browsing
+        assert!(text.contains("run-0001")); // …and the run list is still there
         let _ = fs::remove_dir_all(&dir);
     }
 

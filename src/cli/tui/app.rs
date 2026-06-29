@@ -21,6 +21,8 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 pub enum Focus {
     Runs,
     Detail,
+    /// The persistent prompt at the bottom — type a new requirement without leaving.
+    Input,
 }
 
 /// What the preview region under the step list shows.
@@ -59,6 +61,10 @@ pub struct App {
     pub message: Option<String>,
     /// Local availability of the agent CLIs, self-checked on entering the home screen.
     pub agents: Vec<AdapterStatus>,
+    /// Whether this app can launch runs (home/session). Drives the persistent prompt.
+    pub can_launch: bool,
+    /// Image paths attached to the next run (via `/image`).
+    pub attachments: Vec<PathBuf>,
     /// Selected entry in the slash-command palette.
     palette_index: usize,
     pub runs: Vec<RunEntry>,
@@ -92,6 +98,7 @@ impl App {
         app.screen = Screen::Home;
         app.options = RunOptions::new(dry_run);
         app.agents = check_adapters(); // self-check the local agent CLIs on entry
+        app.can_launch = true;
         app
     }
 
@@ -123,6 +130,8 @@ impl App {
             options: RunOptions::new(false),
             message: None,
             agents: Vec::new(),
+            can_launch: false,
+            attachments: Vec::new(),
             palette_index: 0,
             runs: Vec::new(),
             runs_selected: 0,
@@ -165,6 +174,41 @@ impl App {
             self.submit = Some(requirement);
             self.input.clear();
         }
+    }
+
+    /// Move focus to the persistent prompt (browse → type a new requirement).
+    pub fn focus_input(&mut self) {
+        if self.can_launch {
+            self.focus = Focus::Input;
+        }
+    }
+
+    /// Leave the prompt back to browsing.
+    pub fn leave_input(&mut self) {
+        self.focus = if self.detail.as_ref().is_some_and(|d| !d.steps.is_empty()) {
+            Focus::Detail
+        } else {
+            Focus::Runs
+        };
+    }
+
+    /// Attach an image file to the next run (via `/image <path>`).
+    fn attach_image(&mut self, path: PathBuf) {
+        if path.is_file() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            self.attachments.push(path);
+            self.note(format!("attached {name}"));
+        } else {
+            self.note(format!("no such image: {}", path.display()));
+        }
+    }
+
+    /// Take the queued attachments (the event loop copies them into the run).
+    pub fn take_attachments(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.attachments)
     }
 
     // --- Slash commands ---------------------------------------------------------
@@ -261,6 +305,7 @@ impl App {
                 self.options.dry_run = !self.options.dry_run;
                 self.note(format!("dry-run {}", on_off(self.options.dry_run)));
             }
+            Command::Image(path) => self.attach_image(path),
             Command::Apply => self.apply_selected_run(),
             Command::Doctor => {
                 self.agents = check_adapters();
@@ -455,7 +500,7 @@ impl App {
     fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             Focus::Runs => Focus::Detail,
-            Focus::Detail => Focus::Runs,
+            Focus::Detail | Focus::Input => Focus::Runs,
         };
     }
 
@@ -497,6 +542,7 @@ impl App {
                 self.detail_selected = if top { 0 } else { self.step_count().saturating_sub(1) };
                 self.preview_scroll = 0;
             }
+            Focus::Input => {}
         }
     }
 

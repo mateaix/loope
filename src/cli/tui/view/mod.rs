@@ -34,11 +34,58 @@ pub fn draw(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     frame.render_widget(header_line(app), header);
-    draw_body(frame, app, body);
+
+    // A persistent prompt lives below the browser so you can launch a new run without
+    // returning to the home screen.
+    if app.can_launch && app.screen == Screen::Browse {
+        let [main, prompt] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(body);
+        draw_body(frame, app, main);
+        render_prompt(frame, app, prompt);
+    } else {
+        draw_body(frame, app, body);
+    }
+
     frame.render_widget(footer_line(app), footer);
 
     if app.show_help {
         draw_help(frame);
+    }
+}
+
+/// The persistent prompt at the bottom of the browser.
+fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
+    let focused = app.focus == super::app::Focus::Input;
+    let label = if app.command_mode() {
+        " command ".to_string()
+    } else if app.attachments.is_empty() {
+        " requirement ".to_string()
+    } else {
+        format!(" requirement · 📎 {} image(s) ", app.attachments.len())
+    };
+    let color = if focused { style::BRAND } else { style::DIM };
+    let block = Block::bordered()
+        .title(Span::styled(label, Style::new().fg(color)))
+        .border_style(Style::new().fg(color));
+    let inner = block.inner(area);
+
+    let body = if !focused && app.input.is_empty() {
+        Line::from(Span::styled(
+            "› press i to type a new requirement (or /command)",
+            Style::new().fg(style::DIM),
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled("› ", Style::new().fg(style::BRAND)),
+            Span::raw(app.input.clone()),
+        ])
+    };
+    frame.render_widget(Paragraph::new(body).block(block), area);
+
+    if focused {
+        let typed = Span::raw(app.input.as_str()).width() as u16;
+        let cursor_x = inner.x.saturating_add(2).saturating_add(typed);
+        frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), inner.y));
     }
 }
 
@@ -76,8 +123,12 @@ fn header_line(app: &App) -> Line<'static> {
 fn footer_line(app: &App) -> Line<'static> {
     let hints = if app.live {
         " running… · ↑/↓ steps · a activity · d diff · ? help · q quit "
+    } else if app.focus == super::app::Focus::Input {
+        " type a requirement · / command · enter run · esc cancel "
+    } else if app.can_launch {
+        " ↑/↓ move · → open · i new requirement · a activity · d diff · ? help · q quit "
     } else {
-        " ↑/↓ move · → open · a activity · d diff · t transcript · esc home · ? help · q quit "
+        " ↑/↓ move · → open · a activity · d diff · t transcript · ? help · q quit "
     };
     Line::from(Span::styled(hints, Style::new().fg(style::DIM)))
 }

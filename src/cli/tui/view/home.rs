@@ -173,11 +173,14 @@ fn render_palette(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let (title, color) = if app.command_mode() {
-        (" command ", style::BRAND)
+    let title = if app.command_mode() {
+        " command ".to_string()
+    } else if app.attachments.is_empty() {
+        " requirement ".to_string()
     } else {
-        (" requirement ", style::BRAND)
+        format!(" requirement · 📎 {} image(s) ", app.attachments.len())
     };
+    let color = style::BRAND;
     let block = Block::bordered()
         .title(Span::styled(title, Style::new().fg(color)))
         .border_style(Style::new().fg(color));

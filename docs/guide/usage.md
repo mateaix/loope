@@ -355,7 +355,9 @@ loope run --tui "..."      # run one specific requirement full-screen
   shell.)
 - **Browser** (`loope tui`) — a run list on the left; the selected run's steps grouped by
   iteration on the right; a preview pane showing the focused step's result, its diff, or
-  its transcript.
+  its transcript. When launched from `loope`, a **persistent prompt** sits at the bottom:
+  press `i` to type a new requirement (or `/command`) and run it without returning home —
+  type, watch, browse, type again.
 - **Live** (`loope run --tui`) — the same layout with full `run` flags, updating as the
   loop runs: the active step streams the agent's **data flow** — each file read/edit, each
   command, the model in use, assistant messages, and a running token count — so you can
@@ -395,6 +397,7 @@ configuration.
 | `/verify CMD` | set the verifier command (no argument clears it) |
 | `/design` | toggle the design-contract step |
 | `/dry` | toggle stub agents (no real CLIs) |
+| `/image PATH` | attach an image to the next run (copied into the workspace; the agents open it with their file tools) |
 | `/apply` | copy the selected run's changes into the working tree |
 | `/browse` | open the run browser |
 | `/doctor` | re-check the local agent CLIs |
