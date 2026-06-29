@@ -5,10 +5,12 @@
 //! [`InvocationResult`]. The loop engine only depends on the trait, so the real
 //! subprocess invoker and the deterministic stub invoker are interchangeable.
 
+pub mod cell;
 pub mod event;
 pub mod stub;
 pub mod subprocess;
 
+pub use cell::{Cell, cells_from_events, parse_hunks};
 pub use event::LoopEvent;
 pub use stub::StubInvoker;
 pub use subprocess::SubprocessInvoker;

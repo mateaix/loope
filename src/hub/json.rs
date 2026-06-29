@@ -120,6 +120,20 @@ pub fn field_str(input: &str, key: &str) -> Option<String> {
     read_string(&mut buf.chars().peekable())
 }
 
+/// Extract a `"key":<number>` signed field (returns `None` for `null` or non-numbers).
+pub fn field_i64(input: &str, key: &str) -> Option<i64> {
+    let needle = format!("\"{key}\":");
+    let start = input.find(&needle)? + needle.len();
+    let rest = input[start..].trim_start();
+    let (neg, digits) = match rest.strip_prefix('-') {
+        Some(d) => (true, d),
+        None => (false, rest),
+    };
+    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    let value: i64 = digits.get(..end)?.parse().ok()?;
+    Some(if neg { -value } else { value })
+}
+
 /// Extract a `"key":<number>` unsigned field.
 pub fn field_u64(input: &str, key: &str) -> Option<u64> {
     let needle = format!("\"{key}\":");
