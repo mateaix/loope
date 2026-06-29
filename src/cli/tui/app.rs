@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use loope::Adapter;
+use loope::adapter::{AdapterStatus, check_adapters};
 
 use super::action::Action;
 use super::command::{self, Command};
@@ -54,6 +55,8 @@ pub struct App {
     pub options: RunOptions,
     /// A transient status message from the last command.
     pub message: Option<String>,
+    /// Local availability of the agent CLIs, self-checked on entering the home screen.
+    pub agents: Vec<AdapterStatus>,
     /// Selected entry in the slash-command palette.
     palette_index: usize,
     pub runs: Vec<RunEntry>,
@@ -81,6 +84,7 @@ impl App {
         let mut app = Self::new(runs_dir);
         app.screen = Screen::Home;
         app.options = RunOptions::new(dry_run);
+        app.agents = check_adapters(); // self-check the local agent CLIs on entry
         app
     }
 
@@ -111,6 +115,7 @@ impl App {
             error: None,
             options: RunOptions::new(false),
             message: None,
+            agents: Vec::new(),
             palette_index: 0,
             runs: Vec::new(),
             runs_selected: 0,
@@ -248,6 +253,11 @@ impl App {
                 self.note(format!("dry-run {}", on_off(self.options.dry_run)));
             }
             Command::Apply => self.apply_selected_run(),
+            Command::Doctor => {
+                self.agents = check_adapters();
+                let found = self.agents.iter().filter(|a| a.available).count();
+                self.note(format!("re-checked agents: {found}/{} available", self.agents.len()));
+            }
             Command::Browse => {
                 if self.runs.is_empty() {
                     self.note("no runs to browse".to_string());

@@ -80,6 +80,7 @@ loope runs                                   # list past runs
 loope show run-0001                          # print a past run's report
 loope apply run-0001                         # land a run's changes into your tree
 loope tui                                    # interactive run browser (needs --features tui)
+loope doctor                                 # self-check the local agent CLIs
 loope adapters                               # list supported adapters
 ```
 
@@ -223,10 +224,13 @@ Keyboard-first: type your requirement and press **Enter** to launch it; `Tab` br
 runs, `j/k`/arrows move, `→`/`Enter` drills in, `d`/`t` toggle diff/transcript, `?` for
 help, `q`/`Esc` to quit.
 
+On entry the home screen **self-checks the agent CLIs** — Claude / Codex / OpenCode show
+as `✓` installed or `✗` missing (also `loope doctor` from the shell).
+
 Type **`/`** at the prompt for commands (à la `claude` / `codex`) — `/iters 5`,
 `/preset dual-review`, `/reviewers codex,claude`, `/verify cargo test`, `/design`, `/dry`,
-`/apply`, `/browse`. A palette autocompletes them and a status line shows the current run
-configuration.
+`/apply`, `/browse`, `/doctor`. A palette autocompletes them and a status line shows the
+current run configuration.
 
 The TUI lives behind a `tui` cargo feature, so the **default `cargo build` and the `loope`
 library stay dependency-free** (std only). `./install.sh --no-tui` builds the minimal CLI;

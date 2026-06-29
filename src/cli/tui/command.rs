@@ -16,6 +16,7 @@ pub enum Command {
     ToggleDry,
     Apply,
     Browse,
+    Doctor,
     Help,
     Quit,
 }
@@ -37,6 +38,7 @@ pub const SPECS: &[Spec] = &[
     Spec { name: "dry", args: "", help: "toggle stub agents" },
     Spec { name: "apply", args: "", help: "apply the selected run's changes" },
     Spec { name: "browse", args: "", help: "open the run browser" },
+    Spec { name: "doctor", args: "", help: "re-check the local agent CLIs" },
     Spec { name: "help", args: "", help: "show keys & commands" },
     Spec { name: "quit", args: "", help: "quit" },
 ];
@@ -92,6 +94,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "dry" | "dry-run" => Ok(Command::ToggleDry),
         "apply" => Ok(Command::Apply),
         "browse" | "runs" => Ok(Command::Browse),
+        "doctor" | "check" => Ok(Command::Doctor),
         "help" => Ok(Command::Help),
         "quit" | "exit" => Ok(Command::Quit),
         other => Err(format!("unknown command: /{other}")),

@@ -206,6 +206,12 @@ loope apply run-0001 --workdir ./app # apply into a specific tree
 The applied set is the run's cumulative changed files (`changed-files.txt`). Review the
 diff first with `loope show <run-id> --diff` or `loope run --show-diff`.
 
+### `loope doctor`
+
+Self-check the local agent CLIs: prints each of `claude`, `codex`, `opencode` as `ok`
+(found on `PATH` or via its `LOOPE_*_BIN` override) or `missing`, with the resolved
+program. The home TUI runs the same check on entry.
+
 ### `loope adapters`
 
 List the supported adapter ids.
@@ -334,7 +340,10 @@ loope run --tui "..."      # run one specific requirement full-screen
 
 - **Home** (`loope`) — a prompt: type what you want built and press **Enter**. Loope runs
   the loop (Claude implements, Codex reviews, up to 3 iterations) live, then shows the
-  result; type the next requirement to go again. `Tab` browses past runs.
+  result; type the next requirement to go again. `Tab` browses past runs. On entry it
+  **self-checks the agent CLIs** (Claude / Codex / OpenCode) and shows each as `✓`
+  installed or `✗` missing; `/doctor` re-checks. (`loope doctor` does the same from the
+  shell.)
 - **Browser** (`loope tui`) — a run list on the left; the selected run's steps grouped by
   iteration on the right; a preview pane showing the focused step's result, its diff, or
   its transcript.
@@ -376,6 +385,7 @@ configuration.
 | `/dry` | toggle stub agents (no real CLIs) |
 | `/apply` | copy the selected run's changes into the working tree |
 | `/browse` | open the run browser |
+| `/doctor` | re-check the local agent CLIs |
 | `/help` | keys & command overlay |
 | `/quit` | quit |
 

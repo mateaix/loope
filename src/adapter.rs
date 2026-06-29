@@ -83,6 +83,62 @@ pub fn resolve_program(spec: &AdapterSpec) -> Option<String> {
     resolve_program_from(spec, env_val.as_deref())
 }
 
+/// The local availability of one adapter's CLI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdapterStatus {
+    pub adapter: Adapter,
+    /// The resolved program name (honoring the override env var), if any.
+    pub program: Option<String>,
+    /// Whether that program was found on the system.
+    pub available: bool,
+}
+
+/// Self-check the real coding-agent adapters (Claude, Codex, OpenCode) for a local CLI.
+pub fn check_adapters() -> Vec<AdapterStatus> {
+    [Adapter::Claude, Adapter::Codex, Adapter::OpenCode]
+        .into_iter()
+        .map(status_for)
+        .collect()
+}
+
+/// Probe one adapter: resolve its program and check whether it is installed.
+pub fn status_for(adapter: Adapter) -> AdapterStatus {
+    let program = resolve_program(&spec_for(adapter));
+    let available = program.as_deref().is_some_and(program_exists);
+    AdapterStatus {
+        adapter,
+        program,
+        available,
+    }
+}
+
+/// True if `program` is runnable: an explicit path that is an executable file, or a bare
+/// name found as an executable on `PATH`.
+pub fn program_exists(program: &str) -> bool {
+    let candidate = std::path::Path::new(program);
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        return is_executable(candidate);
+    }
+    let Ok(path) = env::var("PATH") else {
+        return false;
+    };
+    env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 /// A single agent turn to run: a prompt against a workspace, with a private home
 /// directory and a read-only flag.
 #[derive(Clone, Debug)]
@@ -156,6 +212,24 @@ mod tests {
         let spec = spec_for(Adapter::Codex);
         let resolved = resolve_program_from(&spec, Some("/opt/codex"));
         assert_eq!(resolved.as_deref(), Some("/opt/codex"));
+    }
+
+    #[test]
+    fn program_exists_finds_path_binaries_only() {
+        // `sh` is on PATH on every unix; a nonsense name is not, and a bogus absolute
+        // path is not executable.
+        assert!(program_exists("sh"));
+        assert!(!program_exists("loope-definitely-not-a-real-binary-xyz"));
+        assert!(!program_exists("/nonexistent/loope-xyz"));
+    }
+
+    #[test]
+    fn check_adapters_probes_the_three_real_clis() {
+        let statuses = check_adapters();
+        assert_eq!(statuses.len(), 3);
+        assert_eq!(statuses[0].adapter, Adapter::Claude);
+        // Each resolves a program name even when not installed.
+        assert!(statuses.iter().all(|s| s.program.is_some()));
     }
 
     #[test]

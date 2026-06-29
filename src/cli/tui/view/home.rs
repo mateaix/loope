@@ -11,8 +11,9 @@ use super::super::app::App;
 use super::super::style;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let [header, status, body, input, footer] = Layout::vertical([
-        Constraint::Length(2),
+    let [header, agents, status, body, input, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(3),
@@ -21,6 +22,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     render_header(frame, header);
+    render_agents(frame, app, agents);
     render_status(frame, app, status);
     if app.command_mode() {
         render_palette(frame, app, body);
@@ -39,6 +41,26 @@ fn render_header(frame: &mut Frame, area: Rect) {
         ])),
         area,
     );
+}
+
+fn render_agents(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans = vec![Span::styled("  agents  ", Style::new().fg(style::DIM))];
+    for (i, status) in app.agents.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", Style::new().fg(style::DIM)));
+        }
+        let (mark, color) = if status.available {
+            ("✓", style::PASS)
+        } else {
+            ("✗", style::FAIL)
+        };
+        spans.push(Span::styled(
+            format!("{} ", status.adapter.display_name()),
+            Style::new().fg(style::adapter_color(status.adapter.as_str())),
+        ));
+        spans.push(Span::styled(mark, Style::new().fg(color)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {

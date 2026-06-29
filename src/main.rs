@@ -39,6 +39,7 @@ fn main() {
         "show" => cmd_show(&mut args),
         "apply" => cmd_apply(&mut args),
         "tui" => cmd_tui(&mut args),
+        "doctor" => cmd_doctor(),
         "adapters" => {
             for adapter in list_adapters() {
                 println!("{}", adapter.as_str());
@@ -504,6 +505,21 @@ fn cmd_apply(args: &mut Vec<String>) {
     println!("Applied {applied} file(s) from {run_id} into {}.", target.display());
 }
 
+/// Self-check the local agent CLIs and print their availability.
+fn cmd_doctor() {
+    println!("Local agent CLIs:");
+    for status in loope::adapter::check_adapters() {
+        let mark = if status.available { "ok" } else { "missing" };
+        let program = status.program.as_deref().unwrap_or("(none)");
+        println!(
+            "  {:<9} {:<8} {}",
+            status.adapter.as_str(),
+            mark,
+            program
+        );
+    }
+}
+
 /// Open the interactive TUI browser over `.loope/runs/` (requires `--features tui`).
 fn cmd_tui(args: &mut Vec<String>) {
     let _ = remove_value(args, "--color"); // the TUI manages its own color
@@ -743,6 +759,7 @@ Usage:
   loope show <run-id> [--diff]
   loope apply <run-id> [--workdir DIR]
   loope tui                                  (build with --features tui)
+  loope doctor                               (check local agent CLIs)
   loope adapters
 
 The loop iterates: an optional design step, then implement -> review -> verify repeated
