@@ -208,9 +208,12 @@ The loop options the CLI exposes via flags become a form:
   `PipelinePanel`, `HistoryView` + the per-cell `*Cell` components, `ConfigForm`,
   `PresetManager`, `RunControls`, `ConvergenceCard`. A small store subscribes to the event
   channel and reduces deltas into the active cell (the same shape as the TUI's accumulator).
-- **One palette, two surfaces.** Loope's brand palette (already a `style` token set for the
-  TUI) is the source for the GUI's design tokens (CSS variables), so the terminal and the
-  desktop app look like the same product. Light / dark themes.
+- **One identity, two surfaces.** The visual language is **Liquid Glass** — a translucent,
+  layered, specular-lit material system — defined in full (tokens, materials, motion, and a
+  surface-by-surface mapping from the TUI) in [[2026-06-29-loope-liquid-glass-design-spec]].
+  Loope's brand palette and semantics are the accent/agent/state colors, so the terminal and
+  the desktop app are obviously the same tool. Light / dark themes. Every desktop surface is
+  a TUI capability restyled as glass — the functionality is inherited, not reinvented.
 
 ## User-Facing Surface (additions)
 

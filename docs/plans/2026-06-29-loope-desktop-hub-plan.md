@@ -59,8 +59,10 @@ First introduction of the GUI stack, isolated under `apps/desktop/`.
 - Scaffold the desktop application (native backend `src-backend/` depending on `loope` as a
   path dep; component-based front-end `src-ui/`). Its own lockfile/deps; **not** part of the
   root `cargo build` default.
-- Derive the GUI **design tokens** (CSS variables) from Loope's brand palette so the app
-  matches the TUI; light/dark themes; the app shell (title bar, theme switch, nav).
+- Implement the **Liquid Glass design system** from [[2026-06-29-loope-liquid-glass-design-spec]]
+  as reusable tokens/components (glass tiers, specular/sheen/elevation, accent/agent/state
+  colors, vibrancy text, motion) — light/dark themes, reduced-motion + no-`backdrop-filter`
+  fallbacks; the app shell (glass title bar, theme switch, nav).
 - A first backend IPC command: list agents from `AgentRegistry` → render the `AgentSwitcher`
   with ✓/✗/version + install hints. Proves the backend → core → UI path end to end.
 - **Verify:** the app launches and shows real detected agents; the `loope` crate is
