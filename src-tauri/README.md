@@ -17,6 +17,19 @@ The backend is a thin layer over `loope::hub`: each command maps a hub function 
 call (converting the core's plain types into serde DTOs, so `loope` stays serde-free). The
 front-end is **vanilla** HTML/CSS/JS — no npm or bundler — served statically by Tauri.
 
+## Features
+
+- **Multi-agent switcher** — the agent CLIs detected with availability + version and a
+  brand icon each; install hints when missing.
+- **Live runs** — type a requirement, press Enter; the loop's plan (a pipeline strip) sits
+  over a single scrollable transcript of typed cells (exec / diff / markdown / reasoning /
+  action / notice) streamed live. Esc stops (cooperatively, at the next step boundary).
+- **Convergence card** — the "caught & fixed" hero when a reviewer's block is fixed later.
+- **Projects & sessions** — runs grouped by project, double-click to rename, register a
+  project with "+", full-text search across past runs (Shift+Enter).
+- **Run settings & presets** — the ⚙ popover edits the run options (agents, iterations,
+  verify command, design step, dry-run) and saves named presets.
+
 ## Build & run
 
 Prerequisites: a Rust toolchain, the platform's webview libraries (WebKitGTK on Linux;

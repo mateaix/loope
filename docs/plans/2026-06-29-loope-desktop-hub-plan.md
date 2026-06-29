@@ -1,5 +1,12 @@
 # Loope Desktop Hub Plan
 
+> **Status:** implemented. T1–T3 (the std-only `loope::hub` core: registry, project/
+> session/search, the cell model) are built, unit-tested, and shipped (`deps = 1`). T4–T8
+> (the `src-tauri/` desktop app: scaffold, live run bridge, session/project management,
+> config editor + presets, convergence card) are built as an independent, separately
+> packaged crate. The desktop crate needs the Tauri toolchain to compile and is not built
+> in the core's CI.
+
 Implementation plan for [[2026-06-29-loope-desktop-hub-spec]]. The work is sequenced so the
 **std-only core lands and is tested before any GUI exists**, then the desktop app is built
 on top of it. Each task is a coherent, independently verifiable unit. The `loope` crate
