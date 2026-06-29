@@ -3,7 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
+use loope::Adapter;
+
 use super::action::Action;
+use super::command::{self, Command};
+use super::config::RunOptions;
 use super::model::{RunDetail, RunEntry, load_run, load_runs};
 use super::observer::LiveMsg;
 
@@ -46,6 +50,12 @@ pub struct App {
     submit: Option<String>,
     /// A transient error to surface (e.g. a run failed to start).
     pub error: Option<String>,
+    /// The run configuration slash commands mutate.
+    pub options: RunOptions,
+    /// A transient status message from the last command.
+    pub message: Option<String>,
+    /// Selected entry in the slash-command palette.
+    palette_index: usize,
     pub runs: Vec<RunEntry>,
     pub runs_selected: usize,
     pub detail: Option<RunDetail>,
@@ -65,11 +75,12 @@ pub struct App {
 }
 
 impl App {
-    /// The home screen: a prompt to type a requirement, with past runs available to
-    /// browse. This is the front door (`loope` with no arguments).
-    pub fn home(runs_dir: &Path) -> Self {
+    /// The home screen: a prompt to type a requirement (or a `/` command), with past runs
+    /// available to browse. This is the front door (`loope` with no arguments).
+    pub fn home(runs_dir: &Path, dry_run: bool) -> Self {
         let mut app = Self::new(runs_dir);
         app.screen = Screen::Home;
+        app.options = RunOptions::new(dry_run);
         app
     }
 
@@ -98,6 +109,9 @@ impl App {
             input: String::new(),
             submit: None,
             error: None,
+            options: RunOptions::new(false),
+            message: None,
+            palette_index: 0,
             runs: Vec::new(),
             runs_selected: 0,
             detail: None,
@@ -120,11 +134,14 @@ impl App {
 
     pub fn input_char(&mut self, c: char) {
         self.error = None;
+        self.message = None;
         self.input.push(c);
+        self.palette_index = 0;
     }
 
     pub fn input_backspace(&mut self) {
         self.input.pop();
+        self.palette_index = 0;
     }
 
     /// Queue the typed requirement for launch (no-op if blank).
@@ -134,6 +151,152 @@ impl App {
             self.submit = Some(requirement);
             self.input.clear();
         }
+    }
+
+    // --- Slash commands ---------------------------------------------------------
+
+    /// True when the prompt holds a `/` command rather than a requirement.
+    pub fn command_mode(&self) -> bool {
+        self.input.starts_with('/')
+    }
+
+    /// The palette entries matching the current input.
+    pub fn palette(&self) -> Vec<&'static command::Spec> {
+        command::matches(&self.input)
+    }
+
+    /// The clamped palette selection index.
+    pub fn palette_selected(&self) -> usize {
+        let len = self.palette().len();
+        if len == 0 { 0 } else { self.palette_index.min(len - 1) }
+    }
+
+    pub fn palette_move(&mut self, down: bool) {
+        let len = self.palette().len();
+        if len == 0 {
+            return;
+        }
+        let current = self.palette_index.min(len - 1);
+        self.palette_index = if down {
+            (current + 1) % len
+        } else {
+            (current + len - 1) % len
+        };
+    }
+
+    /// Replace the input with the selected command name (ready for arguments).
+    pub fn complete_palette(&mut self) {
+        let matches = self.palette();
+        if let Some(spec) = matches.get(self.palette_selected()) {
+            self.input = format!("/{} ", spec.name);
+        }
+    }
+
+    /// Leave command mode, clearing the input (the caller quits if already empty).
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.palette_index = 0;
+    }
+
+    /// Parse and run the typed command, setting a status message.
+    pub fn run_command(&mut self) {
+        match command::parse(&self.input) {
+            Ok(cmd) => {
+                self.apply_command(cmd);
+                self.clear_input();
+            }
+            Err(err) => self.message = Some(err),
+        }
+    }
+
+    fn apply_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::Iters(n) => {
+                self.options.max_iters = n;
+                self.note(format!("max-iters = {n}"));
+            }
+            Command::Preset(name) => match preset(&name) {
+                Some((implementer, reviewers)) => {
+                    self.options.implementer = implementer;
+                    self.options.reviewers = reviewers;
+                    self.note(format!("preset {name}"));
+                }
+                None => self.note(format!("unknown preset: {name}")),
+            },
+            Command::Implementer(adapter) => {
+                self.options.implementer = adapter;
+                self.note(format!("implementer = {}", adapter.as_str()));
+            }
+            Command::Reviewers(adapters) => {
+                let summary = adapters.iter().map(|a| a.as_str()).collect::<Vec<_>>().join("+");
+                self.options.reviewers = adapters;
+                self.note(format!("reviewers = {summary}"));
+            }
+            Command::Verify(cmd) => {
+                self.note(match &cmd {
+                    Some(c) => format!("verify = {c}"),
+                    None => "verify cleared".to_string(),
+                });
+                self.options.verify_command = cmd;
+            }
+            Command::ToggleDesign => {
+                self.options.include_design = !self.options.include_design;
+                self.note(format!("design {}", on_off(self.options.include_design)));
+            }
+            Command::ToggleDry => {
+                self.options.dry_run = !self.options.dry_run;
+                self.note(format!("dry-run {}", on_off(self.options.dry_run)));
+            }
+            Command::Apply => self.apply_selected_run(),
+            Command::Browse => {
+                if self.runs.is_empty() {
+                    self.note("no runs to browse".to_string());
+                } else {
+                    self.screen = Screen::Browse;
+                }
+            }
+            Command::Help => self.show_help = true,
+            Command::Quit => self.should_quit = true,
+        }
+    }
+
+    fn note(&mut self, message: String) {
+        self.message = Some(message);
+    }
+
+    /// Copy the selected run's changed files into the working directory.
+    fn apply_selected_run(&mut self) {
+        let Some(id) = self.selected_run().map(|r| r.id.clone()) else {
+            self.note("no run to apply".to_string());
+            return;
+        };
+        let run_dir = self.base.join(&id);
+        let workspace = run_dir.join("workspace");
+        let target = self
+            .base
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(&self.base)
+            .to_path_buf();
+        let Ok(listing) = std::fs::read_to_string(run_dir.join("changed-files.txt")) else {
+            self.note(format!("{id}: nothing to apply"));
+            return;
+        };
+        let mut applied = 0usize;
+        for rel in listing.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let from = workspace.join(rel);
+            let to = target.join(rel);
+            if !from.is_file() {
+                continue;
+            }
+            if let Some(parent) = to.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::copy(&from, &to).is_ok() {
+                applied += 1;
+            }
+        }
+        self.note(format!("applied {applied} file(s) from {id}"));
     }
 
     /// Take a queued requirement, if any (called by the event loop to start a run).
@@ -335,4 +498,20 @@ impl App {
     fn step_count(&self) -> usize {
         self.detail.as_ref().map_or(0, |d| d.steps.len())
     }
+}
+
+/// Expand a preset name into (implementer, reviewers), mirroring the CLI presets.
+fn preset(name: &str) -> Option<(Adapter, Vec<Adapter>)> {
+    Some(match name {
+        "claude-codex" => (Adapter::Claude, vec![Adapter::Codex]),
+        "codex-claude" => (Adapter::Codex, vec![Adapter::Claude]),
+        "claude-solo" => (Adapter::Claude, vec![Adapter::Claude]),
+        "dual-review" => (Adapter::Claude, vec![Adapter::Codex, Adapter::Claude]),
+        "opencode-codex" => (Adapter::OpenCode, vec![Adapter::Codex]),
+        _ => return None,
+    })
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
 }

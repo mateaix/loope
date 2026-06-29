@@ -131,6 +131,12 @@ transcript, normalized events, result, and any diff. See
 
 ## Commands
 
+### `loope` (no arguments)
+
+Open the interactive [home prompt](#interactive-tui) (requires a `--features tui` build on
+a terminal). Type a requirement and press Enter to run the loop; `/` runs a command (see
+below). Without the feature or a TTY, prints help.
+
 ### `loope plan <requirement>`
 
 Print the loop plan (roles, adapters, gates, and the prompt for each step). Does not run
@@ -351,6 +357,30 @@ browse past runs, **Esc** to quit. In the **browser / live** views:
 | `r` | refresh the run list |
 | `?` | help overlay |
 | `q` / `Ctrl-C` | quit |
+
+### Slash commands (home prompt)
+
+In the home prompt, start a line with `/` to run a command instead of a requirement. A
+palette of matching commands appears (↑/↓ select, `Tab` completes, `Enter` runs, `Esc`
+leaves command mode). The status line above the prompt always shows the current run
+configuration.
+
+| Command | Effect |
+| --- | --- |
+| `/iters N` | set the iteration cap (alias `/max-iters`) |
+| `/preset NAME` | set adapters from a preset (`claude-codex`, `dual-review`, …) |
+| `/implementer A` | set the implementer adapter |
+| `/reviewers A[,B]` | set the reviewer adapter(s) |
+| `/verify CMD` | set the verifier command (no argument clears it) |
+| `/design` | toggle the design-contract step |
+| `/dry` | toggle stub agents (no real CLIs) |
+| `/apply` | copy the selected run's changes into the working tree |
+| `/browse` | open the run browser |
+| `/help` | keys & command overlay |
+| `/quit` | quit |
+
+Settings commands change the **next** run you launch; e.g. `/iters 5` then typing a
+requirement runs up to five iterations. The configuration mirrors the `loope run` flags.
 
 Both TUI commands require an interactive terminal. On a build **without** the `tui`
 feature they print a hint and exit `2`; `loope run` without `--tui` is unchanged (the

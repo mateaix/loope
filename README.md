@@ -13,7 +13,7 @@
 
 ---
 
-Loope is a Rust CLI prototype for a new development pattern: **don't ask one agent to do everything.** Put agents into a repeatable loop with clear roles, artifacts, and gates.
+Loope is a Rust tool for a new development pattern: **don't ask one agent to do everything.** Put agents into a repeatable loop with clear roles, artifacts, and gates. Run `loope` for an interactive prompt (like `claude` / `codex`), or use it as a scriptable CLI.
 
 ## How it works
 
@@ -75,6 +75,7 @@ loope design "Build a settings page"         # produce a Design Contract artifac
 loope run --dry-run "Add login"              # execute the loop with stub agents
 loope run "Add login"                        # execute by driving the real CLIs
 loope run --show-diff "Add login"            # …and print the cumulative diff after
+loope                                        # open the interactive prompt (needs --features tui)
 loope runs                                   # list past runs
 loope show run-0001                          # print a past run's report
 loope apply run-0001                         # land a run's changes into your tree
@@ -222,6 +223,11 @@ Keyboard-first: type your requirement and press **Enter** to launch it; `Tab` br
 runs, `j/k`/arrows move, `→`/`Enter` drills in, `d`/`t` toggle diff/transcript, `?` for
 help, `q`/`Esc` to quit.
 
+Type **`/`** at the prompt for commands (à la `claude` / `codex`) — `/iters 5`,
+`/preset dual-review`, `/reviewers codex,claude`, `/verify cargo test`, `/design`, `/dry`,
+`/apply`, `/browse`. A palette autocompletes them and a status line shows the current run
+configuration.
+
 The TUI lives behind a `tui` cargo feature, so the **default `cargo build` and the `loope`
 library stay dependency-free** (std only). `./install.sh --no-tui` builds the minimal CLI;
 there, `loope run` works as always and the TUI commands print a hint. See the
@@ -299,12 +305,14 @@ rationale.
 - [Iterative Loop Spec (v1.0)](docs/specs/2026-06-28-loope-iterative-loop-spec.md)
 - [Source Layout Spec](docs/specs/2026-06-29-loope-source-layout-spec.md)
 - [TUI Spec](docs/specs/2026-06-29-loope-tui-spec.md)
+- [TUI Slash Commands Spec](docs/specs/2026-06-29-loope-tui-commands-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
 - [Iterative Loop Plan (v1.0)](docs/plans/2026-06-28-loope-iterative-loop-plan.md)
 - [Source Layout Plan](docs/plans/2026-06-29-loope-source-layout-plan.md)
 - [TUI Plan](docs/plans/2026-06-29-loope-tui-plan.md)
+- [TUI Slash Commands Plan](docs/plans/2026-06-29-loope-tui-commands-plan.md)
 
 ## License
 

@@ -1,17 +1,19 @@
-//! The home screen: a prompt to type a requirement, with recent runs to browse.
+//! The home screen: a prompt to type a requirement (or a `/` command), a status line of
+//! the current run options, recent runs to browse, and a slash-command palette.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::app::App;
 use super::super::style;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let [header, body, input, footer] = Layout::vertical([
+    let [header, status, body, input, footer] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(3),
         Constraint::Length(1),
@@ -19,45 +21,60 @@ pub fn render(frame: &mut Frame, app: &App) {
     .areas(frame.area());
 
     render_header(frame, header);
-    render_body(frame, app, body);
+    render_status(frame, app, status);
+    if app.command_mode() {
+        render_palette(frame, app, body);
+    } else {
+        render_recent(frame, app, body);
+    }
     render_input(frame, app, input);
     render_footer(frame, app, footer);
 }
 
 fn render_header(frame: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
-        Span::styled(" ∞ loope", Style::new().fg(style::BRAND).bold()),
-        Span::styled("   loop engineering", Style::new().fg(style::DIM)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" ∞ loope", Style::new().fg(style::BRAND).bold()),
+            Span::styled("   loop engineering", Style::new().fg(style::DIM)),
+        ])),
+        area,
+    );
 }
 
-fn render_body(frame: &mut Frame, app: &App, area: Rect) {
+fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  ⚙ {}", app.options.summary()),
+            Style::new().fg(style::DIM),
+        ))),
+        area,
+    );
+}
+
+fn render_recent(frame: &mut Frame, app: &App, area: Rect) {
     if app.runs.is_empty() {
-        let welcome = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Type what you want built and press Enter.",
-                Style::new().fg(style::DIM),
-            )),
-            Line::from(Span::styled(
-                "  Loope drives Claude + Codex in a loop — implement → review → verify —",
-                Style::new().fg(style::DIM),
-            )),
-            Line::from(Span::styled(
-                "  iterating until it converges.",
-                Style::new().fg(style::DIM),
-            )),
-        ])
-        .wrap(Wrap { trim: true });
-        frame.render_widget(welcome, area);
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Type what you want built and press Enter — or / for commands.",
+                    Style::new().fg(style::DIM),
+                )),
+                Line::from(Span::styled(
+                    "  Loope drives Claude + Codex in a loop until it converges.",
+                    Style::new().fg(style::DIM),
+                )),
+            ])
+            .wrap(Wrap { trim: true }),
+            area,
+        );
         return;
     }
 
     let items: Vec<ListItem> = app
         .runs
         .iter()
-        .take(area.height.saturating_sub(2) as usize)
+        .take(area.height.saturating_sub(1) as usize)
         .map(|run| {
             let color = if run.converged { style::PASS } else { style::FAIL };
             ListItem::new(Line::from(vec![
@@ -67,16 +84,50 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let list = List::new(items).block(
-        Block::new().title(Span::styled(" recent runs ", Style::new().fg(style::DIM))),
+    frame.render_widget(
+        List::new(items)
+            .block(Block::new().title(Span::styled(" recent runs ", Style::new().fg(style::DIM)))),
+        area,
     );
-    frame.render_widget(list, area);
+}
+
+fn render_palette(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .palette()
+        .iter()
+        .map(|spec| {
+            let mut spans = vec![
+                Span::raw("  "),
+                Span::styled(format!("/{}", spec.name), Style::new().fg(style::BRAND)),
+            ];
+            if !spec.args.is_empty() {
+                spans.push(Span::styled(format!(" {}", spec.args), Style::new().fg(style::DIM)));
+            }
+            spans.push(Span::styled(format!("   {}", spec.help), Style::new().fg(style::DIM)));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::new().title(Span::styled(" commands ", Style::new().fg(style::BRAND))))
+        .highlight_style(Style::new().bg(ratatui::style::Color::Rgb(30, 35, 45)))
+        .highlight_symbol("▸ ");
+    let mut state = ListState::default();
+    if !app.palette().is_empty() {
+        state.select(Some(app.palette_selected()));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
+    let (title, color) = if app.command_mode() {
+        (" command ", style::BRAND)
+    } else {
+        (" requirement ", style::BRAND)
+    };
     let block = Block::bordered()
-        .title(Span::styled(" requirement ", Style::new().fg(style::BRAND)))
-        .border_style(Style::new().fg(style::BRAND));
+        .title(Span::styled(title, Style::new().fg(color)))
+        .border_style(Style::new().fg(color));
     let inner = block.inner(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -86,7 +137,6 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .block(block),
         area,
     );
-    // Blinking cursor at the end of the typed text.
     let cursor_x = inner.x + 2 + app.input.chars().count() as u16;
     frame.set_cursor_position((cursor_x.min(inner.x + inner.width), inner.y));
 }
@@ -94,10 +144,17 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let line = if let Some(error) = &app.error {
         Line::from(Span::styled(format!(" {error}"), Style::new().fg(style::FAIL)))
+    } else if let Some(message) = &app.message {
+        Line::from(Span::styled(format!(" {message}"), Style::new().fg(style::BRAND)))
+    } else if app.command_mode() {
+        Line::from(Span::styled(
+            " ↑/↓ select · Tab complete · Enter run · Esc cancel ",
+            Style::new().fg(style::DIM),
+        ))
     } else {
-        let mut hints = " Enter run".to_string();
+        let mut hints = " Enter run · / command".to_string();
         if !app.runs.is_empty() {
-            hints.push_str(" · Tab browse runs");
+            hints.push_str(" · Tab browse");
         }
         hints.push_str(" · Esc quit ");
         Line::from(Span::styled(hints, Style::new().fg(style::DIM)))

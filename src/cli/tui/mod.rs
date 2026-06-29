@@ -7,6 +7,8 @@
 
 mod action;
 mod app;
+mod command;
+mod config;
 mod model;
 mod observer;
 mod style;
@@ -21,13 +23,13 @@ use std::time::Duration;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use loope::Adapter;
-use loope::adapter::{Invoker, StubInvoker, SubprocessInvoker};
+use loope::adapter::Invoker;
 use loope::engine::workspace::RunWorkspace;
 use loope::engine::{LoopConfig, execute_loop};
 
 use action::action_from_key;
 use app::{App, Screen};
+use config::RunOptions;
 use observer::{LiveMsg, TuiObserver};
 
 /// How long the loop waits for a key before redrawing (drives the spinner).
@@ -36,8 +38,8 @@ const TICK: Duration = Duration::from_millis(80);
 /// The interactive home screen (`loope` with no arguments): type a requirement, watch it
 /// run, browse the result, repeat. `dry_run` uses the stub agents.
 pub fn run_home(cwd: &Path, dry_run: bool) -> io::Result<()> {
-    let session = Session::new(cwd.to_path_buf(), dry_run);
-    let mut app = App::home(&session.base);
+    let session = Session::new(cwd.to_path_buf());
+    let mut app = App::home(&session.base, dry_run);
     let mut terminal = ratatui::init();
     let result = app_loop(&mut terminal, &mut app, Some(&session), None, None);
     ratatui::restore();
@@ -78,11 +80,10 @@ pub fn run_live(
     result
 }
 
-/// Launches runs from the home prompt with sensible defaults.
+/// Launches runs from the home prompt using the app's current [`RunOptions`].
 struct Session {
     cwd: PathBuf,
     base: PathBuf,
-    dry_run: bool,
 }
 
 /// A spawned run the UI is watching.
@@ -94,35 +95,19 @@ struct RunHandle {
 }
 
 impl Session {
-    fn new(cwd: PathBuf, dry_run: bool) -> Self {
+    fn new(cwd: PathBuf) -> Self {
         let base = cwd.join(".loope").join("runs");
-        Self { cwd, base, dry_run }
+        Self { cwd, base }
     }
 
-    /// Start a run for `requirement` on a worker thread (Claude implements, Codex reviews,
-    /// up to 3 iterations) and return its live channel.
-    fn start(&self, requirement: String) -> io::Result<RunHandle> {
+    /// Start a run for `requirement` on a worker thread per `options`, returning its live
+    /// channel.
+    fn start(&self, requirement: String, options: &RunOptions) -> io::Result<RunHandle> {
         let workspace = RunWorkspace::create(&self.base, &self.cwd, false)?;
         let run_id = workspace.run_id.clone();
         let run_dir = workspace.root.clone();
-        let config = LoopConfig {
-            requirement,
-            include_design: false,
-            designer: Adapter::Claude,
-            implementer: Adapter::Claude,
-            reviewers: vec![Adapter::Codex],
-            max_iters: 3,
-            verify_command: None,
-        };
-        let invoker: Box<dyn Invoker + Send + Sync> = if self.dry_run {
-            Box::new(StubInvoker)
-        } else {
-            Box::new(SubprocessInvoker {
-                isolate_home: false,
-                opencode_model: None,
-                timeout: Some(Duration::from_secs(600)),
-            })
-        };
+        let config = options.config(requirement);
+        let invoker = options.make_invoker();
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let observer = TuiObserver::new(tx);
@@ -158,7 +143,7 @@ fn app_loop(
         if let Some(requirement) = app.take_submit()
             && let Some(session) = session
         {
-            match session.start(requirement) {
+            match session.start(requirement, &app.options) {
                 Ok(handle) => {
                     app.begin_live(handle.run_id, handle.run_dir);
                     rx = Some(handle.rx);
@@ -192,6 +177,21 @@ fn handle_key(app: &mut App, key: KeyEvent, can_launch: bool) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if app.screen == Screen::Home {
+        if app.command_mode() {
+            // Slash-command palette: navigate, complete, run, or leave command mode.
+            match key.code {
+                KeyCode::Char('c') if ctrl => app.should_quit = true,
+                KeyCode::Up => app.palette_move(false),
+                KeyCode::Down => app.palette_move(true),
+                KeyCode::Tab => app.complete_palette(),
+                KeyCode::Enter => app.run_command(),
+                KeyCode::Esc => app.clear_input(),
+                KeyCode::Backspace => app.input_backspace(),
+                KeyCode::Char(c) if !ctrl => app.input_char(c),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Enter => app.input_submit(),
             KeyCode::Backspace => app.input_backspace(),
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn home_frame_shows_prompt_and_typed_input() {
         let dir = temp_runs();
-        let mut app = App::home(&dir);
+        let mut app = App::home(&dir, true);
         app.input_char('a');
         app.input_char('d');
         app.input_char('d');
@@ -303,13 +303,42 @@ mod tests {
     #[test]
     fn submit_queues_then_clears_input() {
         let dir = temp_runs();
-        let mut app = App::home(&dir);
+        let mut app = App::home(&dir, true);
         for c in "do it".chars() {
             app.input_char(c);
         }
         app.input_submit();
         assert_eq!(app.take_submit().as_deref(), Some("do it"));
         assert!(app.input.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slash_command_sets_run_options() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir, true);
+        for c in "/iters 7".chars() {
+            app.input_char(c);
+        }
+        assert!(app.command_mode());
+        app.run_command();
+        assert_eq!(app.options.max_iters, 7);
+        assert_eq!(app.options.config("x".to_string()).max_iters, 7);
+        assert!(app.input.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn command_mode_frame_shows_palette() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir, true);
+        app.input_char('/');
+        app.input_char('i');
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| view::draw(frame, &app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("commands"));
+        assert!(text.contains("/iters"));
         let _ = fs::remove_dir_all(&dir);
     }
 
