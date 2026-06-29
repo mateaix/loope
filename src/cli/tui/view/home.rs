@@ -1,7 +1,7 @@
 //! The home screen: a prompt to type a requirement (or a `/` command), a status line of
 //! the current run options, recent runs to browse, and a slash-command palette.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
@@ -10,18 +10,36 @@ use ratatui::Frame;
 use super::super::app::App;
 use super::super::style;
 
+/// A block-letter `LOOPE` wordmark for the splash banner.
+const WORDMARK: [&str; 5] = [
+    "█     █████ █████ █████ █████",
+    "█     █   █ █   █ █   █ █    ",
+    "█     █   █ █   █ █████ ████ ",
+    "█     █   █ █   █ █     █    ",
+    "█████ █████ █████ █     █████",
+];
+
 pub fn render(frame: &mut Frame, app: &App) {
-    let [header, agents, status, body, input, footer] = Layout::vertical([
-        Constraint::Length(1),
+    let area = frame.area();
+    // The full splash needs room; fall back to a one-line header on short terminals.
+    let big = area.height >= 20;
+    let banner_height = if big { 8 } else { 1 };
+
+    let [banner, agents, status, body, input, footer] = Layout::vertical([
+        Constraint::Length(banner_height),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(3),
         Constraint::Length(1),
     ])
-    .areas(frame.area());
+    .areas(area);
 
-    render_header(frame, header);
+    if big {
+        render_banner(frame, banner);
+    } else {
+        render_header(frame, banner);
+    }
     render_agents(frame, app, agents);
     render_status(frame, app, status);
     if app.command_mode() {
@@ -31,6 +49,19 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     render_input(frame, app, input);
     render_footer(frame, app, footer);
+}
+
+/// The large centered splash: the `LOOPE` wordmark and the `∞` tagline.
+fn render_banner(frame: &mut Frame, area: Rect) {
+    let brand = Style::new().fg(style::BRAND).bold();
+    let mut lines = vec![Line::from("")];
+    lines.extend(WORDMARK.iter().map(|row| Line::styled(*row, brand)));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "∞  loop engineering",
+        Style::new().fg(style::DIM),
+    )));
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect) {

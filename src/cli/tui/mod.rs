@@ -295,8 +295,8 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal.draw(|frame| view::draw(frame, &app)).unwrap();
         let text = buffer_text(&terminal);
-        assert!(text.contains("loope"));
-        assert!(text.contains("add"));
+        assert!(text.contains("loop engineering")); // the splash tagline
+        assert!(text.contains("add")); // the typed input
         let _ = fs::remove_dir_all(&dir);
     }
 
