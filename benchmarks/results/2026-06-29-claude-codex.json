@@ -1,0 +1,62 @@
+{
+  "preset": "claude-codex",
+  "max_iters": 3,
+  "date": "2026-06-29",
+  "mode": "real",
+  "samples": 4,
+  "resolve_rate": 1.0,
+  "convergence_rate": 1.0,
+  "catch_and_fix_rate": 0.0,
+  "median_iterations": 1.0,
+  "median_iterations_resolved": 1.0,
+  "total_tokens": 353886,
+  "tokens_per_resolved": 88472,
+  "wasted_token_ratio": 0.0,
+  "median_wall_ms": 84895.0,
+  "records": [
+    {
+      "case": "checked-multiply",
+      "resolved": true,
+      "converged": true,
+      "iterations": 1,
+      "stop_reason": "converged",
+      "catch_and_fix": false,
+      "tokens_in": 92232,
+      "tokens_out": 2599,
+      "wall_ms": 82145
+    },
+    {
+      "case": "empty-average",
+      "resolved": true,
+      "converged": true,
+      "iterations": 1,
+      "stop_reason": "converged",
+      "catch_and_fix": false,
+      "tokens_in": 92449,
+      "tokens_out": 2979,
+      "wall_ms": 92334
+    },
+    {
+      "case": "inclusive-sum",
+      "resolved": true,
+      "converged": true,
+      "iterations": 1,
+      "stop_reason": "converged",
+      "catch_and_fix": false,
+      "tokens_in": 75284,
+      "tokens_out": 3198,
+      "wall_ms": 87645
+    },
+    {
+      "case": "safe-div",
+      "resolved": true,
+      "converged": true,
+      "iterations": 1,
+      "stop_reason": "converged",
+      "catch_and_fix": false,
+      "tokens_in": 82725,
+      "tokens_out": 2420,
+      "wall_ms": 73462
+    }
+  ]
+}
