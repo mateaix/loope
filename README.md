@@ -316,6 +316,7 @@ rationale.
 - [TUI Spec](docs/specs/2026-06-29-loope-tui-spec.md)
 - [TUI Slash Commands Spec](docs/specs/2026-06-29-loope-tui-commands-spec.md)
 - [Convergence Highlight Spec](docs/specs/2026-06-29-loope-convergence-highlight-spec.md)
+- [Desktop Hub Spec](docs/specs/2026-06-29-loope-desktop-hub-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
