@@ -6,25 +6,35 @@
 //! stream to the webview is added on top of these read commands.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use loope::Adapter;
 use loope::adapter::cell::{
     Cell, ChangeKind, ExecState, NoticeLevel, cells_from_events, parse_hunks,
 };
-use loope::adapter::event::parse_event_line;
+use loope::adapter::event::{ActionKind, LoopEvent, parse_event_line};
+use loope::adapter::{Invoker, StubInvoker, SubprocessInvoker};
+use loope::engine::workspace::RunWorkspace;
+use loope::engine::{LoopConfig, StepObserver, StepOutcome, execute_loop};
 use loope::hub::registry::{Capabilities, RealProber};
 use loope::hub::{AgentRegistry, Store, discover, search};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tauri::{Emitter, WebviewWindow};
 
-/// Managed application state: the agent registry (with its detection cache).
+/// Managed application state: the agent registry (with its detection cache) and the cancel
+/// flag of the currently running loop, if any.
 struct AppState {
     registry: AgentRegistry,
+    cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl AppState {
     fn new() -> Self {
         Self {
             registry: AgentRegistry::new(),
+            cancel: Mutex::new(None),
         }
     }
 }
@@ -74,13 +84,13 @@ struct HitDto {
     preview: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct HunkDto {
     header: String,
     lines: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum CellDto {
     Exec {
@@ -357,6 +367,167 @@ fn set_session_name(id: String, name: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Live run bridge
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct OptionsDto {
+    max_iters: usize,
+    implementer: String,
+    reviewers: Vec<String>,
+    designer: String,
+    include_design: bool,
+    verify_command: Option<String>,
+    dry_run: bool,
+}
+
+fn parse_adapter(s: &str) -> Adapter {
+    Adapter::parse(s).unwrap_or(Adapter::Generic)
+}
+
+fn make_invoker(dry_run: bool) -> Box<dyn Invoker + Send + Sync> {
+    if dry_run {
+        Box::new(StubInvoker)
+    } else {
+        Box::new(SubprocessInvoker {
+            isolate_home: false,
+            opencode_model: None,
+            timeout: Some(Duration::from_secs(600)),
+        })
+    }
+}
+
+/// A [`StepObserver`] that forwards the engine's stream to the webview as events, and
+/// watches a shared cancel flag the UI can set to stop the run.
+struct EmitObserver {
+    window: WebviewWindow,
+    cancel: Arc<AtomicBool>,
+}
+
+impl EmitObserver {
+    fn emit_cell(&self, cell: Cell) {
+        let _ = self.window.emit("loope://cell", cell_to_dto(cell));
+    }
+}
+
+impl StepObserver for EmitObserver {
+    fn on_iteration_start(&self, iteration: usize, total: usize) {
+        let _ = self.window.emit(
+            "loope://iteration",
+            serde_json::json!({ "n": iteration, "total": total }),
+        );
+    }
+
+    fn on_step_start(&self, step: &loope::LoopStep) {
+        let _ = self.window.emit(
+            "loope://step-start",
+            serde_json::json!({
+                "id": step.id,
+                "role": step.role.as_str(),
+                "adapter": step.adapter.display_name(),
+            }),
+        );
+    }
+
+    fn on_event(&self, event: &LoopEvent) {
+        if let Some(cell) = Cell::from_event(event) {
+            self.emit_cell(cell);
+        }
+    }
+
+    fn on_step_finish(&self, outcome: &StepOutcome) {
+        if !outcome.result.message.trim().is_empty() {
+            self.emit_cell(Cell::Markdown {
+                text: outcome.result.message.clone(),
+            });
+        }
+        for change in &outcome.changes {
+            self.emit_cell(Cell::Action {
+                kind: ActionKind::Edit,
+                target: format!("{}  +{} -{}", change.path, change.added, change.removed),
+            });
+        }
+        let _ = self.window.emit(
+            "loope://step-finish",
+            serde_json::json!({
+                "role": outcome.role.as_str(),
+                "adapter": outcome.adapter.display_name(),
+                "iteration": outcome.iteration,
+                "gate_passed": outcome.gate_passed,
+                "gate": outcome.gate_notes,
+            }),
+        );
+    }
+
+    fn should_cancel(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
+
+#[tauri::command]
+fn start_run(
+    window: WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    project_path: String,
+    requirement: String,
+    options: OptionsDto,
+) -> Result<String, String> {
+    let project = PathBuf::from(&project_path);
+    let base = project.join(".loope").join("runs");
+    let workspace =
+        RunWorkspace::create(&base, &project, false, &requirement).map_err(|e| e.to_string())?;
+    let run_id = workspace.run_id.clone();
+    let run_dir = workspace.root.to_string_lossy().into_owned();
+
+    let config = LoopConfig {
+        requirement,
+        include_design: options.include_design,
+        designer: parse_adapter(&options.designer),
+        implementer: parse_adapter(&options.implementer),
+        reviewers: options.reviewers.iter().map(|s| parse_adapter(s)).collect(),
+        max_iters: options.max_iters.max(1),
+        verify_command: options.verify_command,
+    };
+    let invoker = make_invoker(options.dry_run);
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut slot) = state.cancel.lock() {
+        *slot = Some(cancel.clone());
+    }
+
+    let win = window.clone();
+    std::thread::spawn(move || {
+        let observer = EmitObserver {
+            window: win.clone(),
+            cancel,
+        };
+        let result = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
+        let payload = match result {
+            Ok(run) => serde_json::json!({
+                "ok": true,
+                "run_id": workspace.run_id,
+                "run_dir": run_dir,
+                "stop_reason": run.stop_reason.label(),
+                "converged": run.all_passed(),
+            }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        };
+        let _ = win.emit("loope://run-finished", payload);
+    });
+
+    Ok(run_id)
+}
+
+#[tauri::command]
+fn stop_run(state: tauri::State<'_, AppState>) {
+    if let Ok(slot) = state.cancel.lock()
+        && let Some(cancel) = slot.as_ref()
+    {
+        cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Entry point used by `main.rs`.
 pub fn run() {
     tauri::Builder::default()
@@ -369,6 +540,8 @@ pub fn run() {
             add_project,
             remove_project,
             set_session_name,
+            start_run,
+            stop_run,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Loope Desktop");

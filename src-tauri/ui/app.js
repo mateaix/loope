@@ -24,6 +24,16 @@ const el = (tag, cls, text) => {
 };
 
 let state = { projects: [], activeProject: null, activeSession: null };
+let live = false;
+const OPTIONS = {
+  max_iters: 3,
+  implementer: "claude",
+  reviewers: ["codex"],
+  designer: "claude",
+  include_design: false,
+  verify_command: null,
+  dry_run: false,
+};
 
 // ---------------------------------------------------------------- agents
 async function loadAgents() {
@@ -271,10 +281,82 @@ function wireCommandBar() {
     if (e.shiftKey) {
       runSearch(value);
     } else {
-      // The live run bridge lands in the next build (T5); for now offer search.
-      toast("Live runs arrive in the next build — Shift+Enter searches your runs.");
+      startRun(value);
     }
   });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && live) {
+      invoke("stop_run").catch(() => {});
+      toast("stopping… (finishes the current step)");
+    }
+  });
+}
+
+// ---------------------------------------------------------------- live run
+async function startRun(requirement) {
+  if (!state.activeProject) { toast("Open a project first."); return; }
+  $("prompt").value = "";
+  $("stream").textContent = "";
+  live = true;
+  $("hint").textContent = "running… · Esc to stop";
+  renderLivePipeline();
+  try {
+    await invoke("start_run", {
+      projectPath: state.activeProject.path,
+      requirement,
+      options: OPTIONS,
+    });
+  } catch (e) {
+    live = false;
+    $("hint").textContent = "⏎ run · ⇧⏎ search";
+    toast("Could not start: " + e);
+  }
+}
+
+function renderLivePipeline() {
+  const pipe = $("pipe");
+  pipe.textContent = "";
+  [["implement", "run"], ["review", ""], ["verify", ""]].forEach(([r, c], i) => {
+    if (i) pipe.appendChild(el("span", "pe"));
+    pipe.appendChild(el("span", "pn " + c, r));
+  });
+  pipe.appendChild(el("span", "pe"));
+  pipe.appendChild(el("span", "pn goal", "converge"));
+  pipe.appendChild(el("span", "iter", "iter 1"));
+}
+
+function streamAppend(node) {
+  const s = $("stream");
+  s.appendChild(node);
+  s.scrollTop = s.scrollHeight;
+}
+
+function setupListeners() {
+  if (!TAURI) return;
+  const { listen } = TAURI.event;
+  listen("loope://iteration", (e) => {
+    const it = document.querySelector("#pipe .iter");
+    if (it) it.textContent = "iter " + e.payload.n + " / " + e.payload.total;
+  });
+  listen("loope://step-start", (e) => {
+    streamAppend(el("div", "sep", (e.payload.role || "step") + " · " + (e.payload.adapter || "")));
+  });
+  listen("loope://cell", (e) => streamAppend(renderCell(e.payload)));
+  listen("loope://run-finished", (e) => onRunFinished(e.payload));
+}
+
+async function onRunFinished(p) {
+  live = false;
+  $("hint").textContent = "⏎ run · ⇧⏎ search";
+  if (!p.ok) { toast("run failed: " + (p.error || "")); return; }
+  toast(p.converged ? "converged ✓" : (p.stop_reason || "finished"));
+  await loadProjects();
+  try {
+    const run = await invoke("read_run", { runDir: p.run_dir });
+    const sess = { converged: p.converged, has_highlight: false, id: run.id };
+    renderPipeline(run, sess);
+    renderTranscript(run, sess);
+  } catch (e) {}
 }
 
 // ---------------------------------------------------------------- boot
@@ -284,6 +366,7 @@ async function boot() {
     $("empty").textContent = "Browser preview — agent/run data loads inside the desktop app.";
     return;
   }
+  setupListeners();
   await loadAgents();
   await loadProjects();
 }
