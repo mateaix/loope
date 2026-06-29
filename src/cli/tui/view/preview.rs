@@ -8,7 +8,7 @@ use loope::adapter::event::parse_event_line;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::super::app::{App, Preview};
@@ -34,12 +34,13 @@ pub fn render(frame: &mut Frame, app: &App, detail: &RunDetail, area: Rect) {
         .title(Span::styled(format!(" {label} "), Style::new().fg(style::DIM)))
         .border_style(Style::new().fg(style::DIM));
 
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(block)
-            .scroll((app.preview_scroll, 0)),
-        area,
-    );
+    let mut paragraph = Paragraph::new(text).block(block).scroll((app.preview_scroll, 0));
+    // Wrap prose (result / transcript / activity) so long lines stay visible; never wrap
+    // the diff, where columns must line up.
+    if app.preview != Preview::Diff {
+        paragraph = paragraph.wrap(Wrap { trim: false });
+    }
+    frame.render_widget(paragraph, area);
 }
 
 /// The live data stream of the currently-running step: a header (model + tokens) over the
