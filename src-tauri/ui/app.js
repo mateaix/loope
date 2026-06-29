@@ -25,7 +25,7 @@ const el = (tag, cls, text) => {
 
 let state = { projects: [], activeProject: null, activeSession: null };
 let live = false;
-const OPTIONS = {
+const DEFAULT_OPTIONS = {
   max_iters: 3,
   implementer: "claude",
   reviewers: ["codex"],
@@ -34,6 +34,12 @@ const OPTIONS = {
   verify_command: null,
   dry_run: false,
 };
+function loadStored(key, fallback) {
+  try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? fallback : v; }
+  catch (e) { return fallback; }
+}
+const OPTIONS = Object.assign({}, DEFAULT_OPTIONS, loadStored("loope.options", {}));
+function saveOptions() { localStorage.setItem("loope.options", JSON.stringify(OPTIONS)); }
 
 // ---------------------------------------------------------------- agents
 async function loadAgents() {
@@ -100,11 +106,18 @@ function renderSidebar() {
       row.appendChild(document.createTextNode(s.name || s.id));
       row.appendChild(el("small", null, s.stop_reason + " · " + s.iterations));
       row.onclick = () => selectSession(s);
+      row.ondblclick = () => renameSession(s);
       bar.appendChild(row);
     }
     if (!active.sessions.length) bar.appendChild(el("div", "proj", "no runs yet"));
   }
-  bar.appendChild(el("div", "side-h sub", "PROJECTS"));
+  const ph = el("div", "side-h sub");
+  ph.appendChild(document.createTextNode("PROJECTS"));
+  const add = el("span", "addbtn", "+");
+  add.title = "register a project";
+  add.onclick = addProject;
+  ph.appendChild(add);
+  bar.appendChild(ph);
   for (const p of state.projects) {
     const row = el("div", "proj");
     row.appendChild(document.createTextNode("▸ " + p.name));
@@ -263,6 +276,69 @@ async function runSearch(query) {
   }
 }
 
+// ---------------------------------------------------------------- rename / projects
+async function renameSession(s) {
+  const name = window.prompt("Name this run:", s.name || s.id);
+  if (name == null) return;
+  try { await invoke("set_session_name", { id: s.id, name }); await loadProjects(); }
+  catch (e) { toast("rename failed"); }
+}
+
+async function addProject() {
+  const path = window.prompt("Project path (a directory with .loope/runs):");
+  if (!path) return;
+  try { await invoke("add_project", { path }); await loadProjects(); toast("project registered"); }
+  catch (e) { toast("could not register project"); }
+}
+
+// ---------------------------------------------------------------- settings + presets
+function gearToggle() {
+  const s = $("settings");
+  if (s.classList.contains("hidden")) { renderSettings(); s.classList.remove("hidden"); }
+  else { s.classList.add("hidden"); }
+}
+function presetsStore() { return loadStored("loope.presets", {}); }
+function savePresets(p) { localStorage.setItem("loope.presets", JSON.stringify(p)); }
+
+function fieldRow(label, input) { const f = el("div", "field"); f.appendChild(el("label", null, label)); f.appendChild(input); return f; }
+function textField(label, val, on) { const i = el("input"); i.type = "text"; i.value = val; i.oninput = () => on(i.value); return fieldRow(label, i); }
+function numField(label, val, on) { const i = el("input"); i.type = "number"; i.min = "1"; i.value = val; i.oninput = () => on(i.value); return fieldRow(label, i); }
+function checkField(label, val, on) { const i = el("input"); i.type = "checkbox"; i.checked = val; i.onchange = () => on(i.checked); return fieldRow(label, i); }
+function selectField(label, opts, val, on) {
+  const sel = el("select");
+  opts.forEach((o) => { const op = el("option", null, o); op.value = o; if (o === val) op.selected = true; sel.appendChild(op); });
+  sel.onchange = () => on(sel.value);
+  return fieldRow(label, sel);
+}
+
+function renderSettings() {
+  const s = $("settings");
+  s.textContent = "";
+  s.appendChild(el("h3", null, "RUN SETTINGS"));
+  s.appendChild(selectField("implementer", ["claude", "codex", "opencode"], OPTIONS.implementer, (v) => { OPTIONS.implementer = v; saveOptions(); }));
+  s.appendChild(textField("reviewers", OPTIONS.reviewers.join(","), (v) => { OPTIONS.reviewers = v.split(",").map((x) => x.trim()).filter(Boolean); saveOptions(); }));
+  s.appendChild(numField("max iters", OPTIONS.max_iters, (v) => { OPTIONS.max_iters = Math.max(1, parseInt(v) || 1); saveOptions(); }));
+  s.appendChild(textField("verify cmd", OPTIONS.verify_command || "", (v) => { OPTIONS.verify_command = v.trim() || null; saveOptions(); }));
+  s.appendChild(checkField("design step", OPTIONS.include_design, (v) => { OPTIONS.include_design = v; saveOptions(); }));
+  s.appendChild(checkField("dry run (stub agents)", OPTIONS.dry_run, (v) => { OPTIONS.dry_run = v; saveOptions(); }));
+
+  const box = el("div", "presets");
+  box.appendChild(el("h3", null, "PRESETS"));
+  const presets = presetsStore();
+  for (const name of Object.keys(presets)) {
+    const r = el("div", "preset");
+    const nm = el("span", "nm", name);
+    nm.onclick = () => { Object.assign(OPTIONS, presets[name]); saveOptions(); renderSettings(); toast("applied " + name); };
+    const del = el("span", "del", "✕");
+    del.onclick = () => { const p = presetsStore(); delete p[name]; savePresets(p); renderSettings(); };
+    r.appendChild(nm); r.appendChild(del); box.appendChild(r);
+  }
+  const save = el("button", "btn", "save current as preset");
+  save.onclick = () => { const name = window.prompt("Preset name:"); if (!name) return; const p = presetsStore(); p[name] = Object.assign({}, OPTIONS); savePresets(p); renderSettings(); };
+  box.appendChild(save);
+  s.appendChild(box);
+}
+
 function toast(msg) {
   let t = $("toast");
   if (!t) { t = el("div", "toast"); t.id = "toast"; document.body.appendChild(t); }
@@ -273,6 +349,8 @@ function toast(msg) {
 }
 
 function wireCommandBar() {
+  const gear = $("gear");
+  if (gear) gear.onclick = gearToggle;
   const input = $("prompt");
   input.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
