@@ -7,9 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::iter::Peekable;
 use std::path::{Path, PathBuf};
-use std::str::Chars;
+
+use super::json;
 
 /// A handle to the `~/.loope/` metadata directory.
 pub struct Store {
@@ -40,13 +40,52 @@ impl Store {
     /// Load a string→string map from `name`, or an empty map if it is missing/unreadable.
     pub fn load_map(&self, name: &str) -> BTreeMap<String, String> {
         std::fs::read_to_string(self.dir.join(name))
-            .map(|s| parse_string_map(&s))
+            .map(|s| json::parse_object(&s))
             .unwrap_or_default()
     }
 
     /// Atomically write a string→string map to `name`.
     pub fn save_map(&self, name: &str, map: &BTreeMap<String, String>) -> io::Result<()> {
-        atomic_write(&self.dir.join(name), &write_string_map(map))
+        atomic_write(&self.dir.join(name), &json::write_object(map))
+    }
+
+    /// Load a string list from `name`, or an empty list if it is missing/unreadable.
+    pub fn load_list(&self, name: &str) -> Vec<String> {
+        std::fs::read_to_string(self.dir.join(name))
+            .map(|s| json::parse_array(&s))
+            .unwrap_or_default()
+    }
+
+    /// Atomically write a string list to `name`.
+    pub fn save_list(&self, name: &str, items: &[String]) -> io::Result<()> {
+        atomic_write(&self.dir.join(name), &json::write_array(items))
+    }
+
+    /// The registered project paths.
+    pub fn projects(&self) -> Vec<String> {
+        self.load_list(PROJECTS)
+    }
+
+    /// Register a project path (idempotent; kept sorted).
+    pub fn add_project(&self, path: &str) -> io::Result<()> {
+        let mut list = self.projects();
+        if list.iter().any(|p| p == path) {
+            return Ok(());
+        }
+        list.push(path.to_string());
+        list.sort();
+        self.save_list(PROJECTS, &list)
+    }
+
+    /// Forget a project path.
+    pub fn remove_project(&self, path: &str) -> io::Result<()> {
+        let mut list = self.projects();
+        let before = list.len();
+        list.retain(|p| p != path);
+        if list.len() == before {
+            return Ok(());
+        }
+        self.save_list(PROJECTS, &list)
     }
 
     /// Friendly names users have given to sessions, keyed by session id.
@@ -76,124 +115,13 @@ impl Store {
 
 const SESSION_NAMES: &str = "session-names.json";
 const STATE: &str = "state.json";
+const PROJECTS: &str = "projects.json";
 
 /// Write `contents` to `path` atomically (write a sibling temp file, then rename).
 fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)
-}
-
-/// Serialize a string→string map as a JSON object.
-fn write_string_map(map: &BTreeMap<String, String>) -> String {
-    let mut out = String::from("{");
-    for (i, (key, value)) in map.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push('"');
-        out.push_str(&esc(key));
-        out.push_str("\":\"");
-        out.push_str(&esc(value));
-        out.push('"');
-    }
-    out.push('}');
-    out
-}
-
-/// Parse a flat JSON object of `"key":"value"` pairs (lenient — ignores anything else).
-fn parse_string_map(input: &str) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    let mut chars = input.chars().peekable();
-    // Advance past the opening brace.
-    for c in chars.by_ref() {
-        if c == '{' {
-            break;
-        }
-    }
-    loop {
-        skip_ws(&mut chars);
-        match chars.peek() {
-            Some('"') => {
-                let key = read_string(&mut chars);
-                skip_ws(&mut chars);
-                if chars.peek() == Some(&':') {
-                    chars.next();
-                }
-                skip_ws(&mut chars);
-                let value = if chars.peek() == Some(&'"') {
-                    read_string(&mut chars)
-                } else {
-                    None
-                };
-                if let (Some(k), Some(v)) = (key, value) {
-                    map.insert(k, v);
-                }
-            }
-            Some(',') => {
-                chars.next();
-            }
-            Some('}') | None => break,
-            _ => {
-                chars.next();
-            }
-        }
-    }
-    map
-}
-
-/// Read a JSON string starting at the opening quote, reversing [`esc`].
-fn read_string(chars: &mut Peekable<Chars>) -> Option<String> {
-    if chars.next() != Some('"') {
-        return None;
-    }
-    let mut out = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next()? {
-                'n' => out.push('\n'),
-                'r' => out.push('\r'),
-                't' => out.push('\t'),
-                'u' => {
-                    let hex: String = (0..4).filter_map(|_| chars.next()).collect();
-                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                        out.push(ch);
-                    }
-                }
-                other => out.push(other),
-            },
-            c => out.push(c),
-        }
-    }
-    None
-}
-
-fn skip_ws(chars: &mut Peekable<Chars>) {
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
-            chars.next();
-        } else {
-            break;
-        }
-    }
-}
-
-/// Minimal JSON string escaping.
-fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -245,6 +173,18 @@ mod tests {
         assert_eq!(names.get("0007-add-auth").map(String::as_str), Some("the auth run"));
         assert_eq!(names.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn projects_register_dedupe_and_remove() {
+        let store = Store::at(temp_dir("projects")).unwrap();
+        store.add_project("/a/one").unwrap();
+        store.add_project("/a/two").unwrap();
+        store.add_project("/a/one").unwrap(); // idempotent
+        assert_eq!(store.projects(), vec!["/a/one".to_string(), "/a/two".to_string()]);
+        store.remove_project("/a/one").unwrap();
+        assert_eq!(store.projects(), vec!["/a/two".to_string()]);
+        let _ = std::fs::remove_dir_all(store.dir());
     }
 
     #[test]
