@@ -119,10 +119,12 @@ run read-only where the CLI supports it.
 `opencode`, `generic`. See [Adapters & providers](#adapters--providers).
 
 **Verification.** With `--verify-cmd C`, Loope runs `C` in the workspace each iteration
-and verification passes iff it exits 0. With no command, verification is informational
-(treated as passing) and convergence rests on the reviewers' verdicts. Reviewers emit a
-structured verdict (`VERDICT: PASS` / `VERDICT: BLOCK`); any `BLOCK` keeps the loop
-iterating with that feedback.
+and verification passes iff it exits 0. On failure, a **trimmed tail of the command's
+output** (where test failures land) is fed to the next iteration's implementer so it can
+fix the actual cause — bounded to keep the prompt small. With no command, verification is
+informational (treated as passing) and convergence rests on the reviewers' verdicts.
+Reviewers emit a structured verdict (`VERDICT: PASS` / `VERDICT: BLOCK`); any `BLOCK`
+keeps the loop iterating with that feedback.
 
 **Workspace & artifacts.** Each run gets its own directory under `.loope/runs/<run-id>/`
 with a copied working tree and a numbered directory per step recording the exact prompt,

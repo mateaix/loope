@@ -385,7 +385,13 @@ pub fn execute_loop(
             let vrun = execute_one(workspace, &vstep, &vprompt, invoker, observer, Some(cmd))?;
             verify_pass = vrun.result.success;
             if !verify_pass {
-                verify_failure = Some(vrun.result.message.clone());
+                // Feed back the command's actual output (a bounded tail — failures land
+                // at the end), not just the exit code, so the next implementer can fix it.
+                verify_failure = Some(tail_lines(
+                    &vrun.result.transcript,
+                    FEEDBACK_MAX_LINES,
+                    FEEDBACK_MAX_BYTES,
+                ));
             }
             let vnotes = if verify_pass {
                 "verification passed"
@@ -500,11 +506,42 @@ fn compose_feedback(blockers: &[String], verify_failure: Option<&str>) -> String
         }
     }
     if let Some(failure) = verify_failure {
-        out.push_str("\nThe verifier failed; fix the cause:\n");
+        out.push_str("\nThe verify command failed. Fix the cause; its output:\n");
         out.push_str(failure.trim());
         out.push('\n');
     }
     out
+}
+
+/// Upper bounds on the verify output fed back to the next iteration. Failures appear at
+/// the end of a command's output, so the tail is the useful part; bounding it keeps the
+/// feedback — and the tokens it costs the next agent — small.
+const FEEDBACK_MAX_LINES: usize = 40;
+const FEEDBACK_MAX_BYTES: usize = 2000;
+
+/// Keep the last `max_lines` lines of `text`, also capped to `max_bytes` from the end,
+/// prefixed with an elision marker when anything was dropped.
+fn tail_lines(text: &str, max_lines: usize, max_bytes: usize) -> String {
+    let trimmed = text.trim_end();
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    let mut tail = lines[start..].join("\n");
+    let mut truncated = start > 0;
+
+    if tail.len() > max_bytes {
+        let mut cut = tail.len() - max_bytes;
+        while cut < tail.len() && !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        tail = tail[cut..].to_string();
+        truncated = true;
+    }
+
+    if truncated {
+        format!("…(earlier output trimmed)\n{tail}")
+    } else {
+        tail
+    }
 }
 
 /// Run a single non-reviewer step: persist its artifacts and detect its changes,
@@ -936,6 +973,24 @@ mod tests {
         assert_eq!(run.stop_reason, StopReason::StepFailed);
         assert_eq!(run.iterations, 1);
         assert!(!run.all_passed());
+    }
+
+    #[test]
+    fn tail_lines_keeps_the_end_and_marks_truncation() {
+        // Short text passes through untouched.
+        assert_eq!(tail_lines("a\nb\nc", 10, 1000), "a\nb\nc");
+
+        // More lines than the cap keeps the last ones with a marker.
+        let many = (1..=100).map(|n| n.to_string()).collect::<Vec<_>>().join("\n");
+        let tail = tail_lines(&many, 3, 1000);
+        assert!(tail.starts_with("…(earlier output trimmed)"));
+        assert!(tail.ends_with("98\n99\n100"));
+        assert!(!tail.contains("\n1\n"));
+
+        // The byte cap also truncates and stays on a char boundary (no panic on UTF-8).
+        let wide = "é".repeat(5000);
+        let capped = tail_lines(&wide, 10, 100);
+        assert!(capped.len() <= 100 + "…(earlier output trimmed)\n".len() + 1);
     }
 
     #[test]

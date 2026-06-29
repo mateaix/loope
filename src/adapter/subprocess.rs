@@ -532,8 +532,10 @@ fn shorten_target(target: &str) -> String {
         let tail: Vec<&str> = target.rsplit('/').take(2).collect();
         let tail = tail.into_iter().rev().collect::<Vec<_>>().join("/");
         format!("…/{tail}")
-    } else if target.len() > 64 {
-        format!("{}…", &target[..63])
+    } else if target.chars().count() > 64 {
+        // Truncate by characters, not bytes — a byte slice would panic mid-UTF-8.
+        let truncated: String = target.chars().take(63).collect();
+        format!("{truncated}…")
     } else {
         target.to_string()
     }
@@ -676,6 +678,20 @@ mod tests {
     #[test]
     fn none_when_no_agent_message() {
         assert_eq!(extract_last_agent_message("{\"type\":\"turn.started\"}"), None);
+    }
+
+    #[test]
+    fn shorten_target_is_utf8_safe() {
+        // Regression: a long non-ASCII target used to panic on a byte-index slice.
+        let command = "é".repeat(100);
+        let shortened = shorten_target(&command);
+        assert!(shortened.ends_with('…'));
+        assert!(shortened.chars().count() <= 64);
+
+        // Long paths still keep their tail; short targets pass through.
+        let path = format!("/a/very/long/{}/src/lib.rs", "x".repeat(60));
+        assert!(shorten_target(&path).starts_with("…/"));
+        assert_eq!(shorten_target("cargo test"), "cargo test");
     }
 }
 

@@ -190,7 +190,8 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .block(block),
         area,
     );
-    let cursor_x = inner.x + 2 + app.input.chars().count() as u16;
+    let typed = app.input.chars().count().min(u16::MAX as usize) as u16;
+    let cursor_x = inner.x.saturating_add(2).saturating_add(typed);
     frame.set_cursor_position((cursor_x.min(inner.x + inner.width), inner.y));
 }
 
