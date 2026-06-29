@@ -76,8 +76,8 @@ loope run --verify-cmd "cargo test" "Add a multiply(a, b) function with a test"
 
 # 4) Inspect a past run
 loope runs                      # list runs with their outcome
-loope show run-0001             # print a run's report
-loope show run-0001 --diff      # report + the unified diffs of what changed
+loope show 0001             # print a run's report
+loope show 0001 --diff      # report + the unified diffs of what changed
 ```
 
 By default Loope operates on a **copy** of your project inside the run directory, so a
@@ -189,7 +189,8 @@ List past runs in `.loope/runs/`, each with its outcome and step count.
 
 ### `loope show <run-id>`
 
-Print a past run's report.
+Print a past run's report. The `<run-id>` may be the full directory name
+(`0007-add-jwt-auth`) or any **unique prefix** (`0007`), like a short git hash.
 
 - `--diff` — also print the run's unified diffs (hunked, with a line-number gutter).
 - `--color WHEN`.
@@ -201,8 +202,8 @@ so a converged run can be landed in your real tree. It lists what it applied and
 deletes** anything.
 
 ```bash
-loope apply run-0001                 # apply into the current directory
-loope apply run-0001 --workdir ./app # apply into a specific tree
+loope apply 0001                 # apply into the current directory
+loope apply 0001 --workdir ./app # apply into a specific tree
 ```
 
 The applied set is the run's cumulative changed files (`changed-files.txt`). Review the
@@ -261,10 +262,12 @@ loope run --preset dual-review --verify-cmd "cargo test" "Add an endpoint"
 
 ## The run directory
 
-Everything about a run lives under `.loope/runs/<run-id>/` (gitignored):
+Each run's id is a zero-padded sequence number plus a slug of the requirement —
+`0007-add-jwt-auth` — so runs stay ordered and self-describing; commands accept any unique
+prefix (`0007`). Everything about a run lives under `.loope/runs/<run-id>/` (gitignored):
 
 ```text
-.loope/runs/run-0001/
+.loope/runs/0001-add-login/
   plan.md                 the generated loop plan
   report.md               final loop report (steps grouped by iteration, outcome)
   run.json                machine-readable run record (iterations, stop_reason, converged)
@@ -411,8 +414,8 @@ stats and a per-step unified diff; the run as a whole records a **cumulative dif
 
 ```bash
 loope run --show-diff "..."     # print the cumulative diff right after the run
-loope show run-0001 --diff      # report + the run's cumulative diff
-loope apply run-0001            # land those changes into your working tree
+loope show 0001 --diff      # report + the run's cumulative diff
+loope apply 0001            # land those changes into your working tree
 ```
 
 Diffs render as `@@` hunks with a line-number gutter and `+`/`−` coloring; large diffs

@@ -136,7 +136,7 @@ fn cmd_design(args: &mut Vec<String>) {
         ui::banner(true);
     }
 
-    let workspace = match RunWorkspace::create(&base, &source, in_place) {
+    let workspace = match RunWorkspace::create(&base, &source, in_place, &requirement) {
         Ok(ws) => ws,
         Err(err) => {
             eprintln!("failed to create run workspace: {err}");
@@ -301,7 +301,7 @@ fn cmd_run(args: &mut Vec<String>) {
         ui::pipeline(&loop_steps, config.max_iters > 1, true);
     }
 
-    let workspace = match RunWorkspace::create(&base, &source, in_place) {
+    let workspace = match RunWorkspace::create(&base, &source, in_place, &requirement) {
         Ok(ws) => ws,
         Err(err) => {
             eprintln!("failed to create run workspace: {err}");
@@ -419,12 +419,14 @@ fn cmd_show(args: &mut Vec<String>) {
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     apply_color_level(color);
     let show_diff = remove_flag(args, "--diff");
-    let Some(run_id) = args.first() else {
-        eprintln!("loope show requires a run id, e.g. loope show run-0001");
+    let Some(query) = args.first() else {
+        eprintln!("loope show requires a run id, e.g. loope show 0001");
         process::exit(2);
     };
     let cwd = current_dir_or_exit();
-    let run_dir = cwd.join(".loope").join("runs").join(run_id);
+    let base = cwd.join(".loope").join("runs");
+    let run_id = resolve_run(&base, query);
+    let run_dir = base.join(&run_id);
     let report = run_dir.join("report.md");
     match fs::read_to_string(&report) {
         Ok(contents) => ui::print_report(&contents, Some(&run_dir), color),
@@ -448,12 +450,14 @@ fn cmd_show(args: &mut Vec<String>) {
 /// Copy a run's changed/added files from its workspace back into the working directory.
 fn cmd_apply(args: &mut Vec<String>) {
     let workdir = remove_value(args, "--workdir");
-    let Some(run_id) = args.first().cloned() else {
-        eprintln!("loope apply requires a run id, e.g. loope apply run-0001");
+    let Some(query) = args.first().cloned() else {
+        eprintln!("loope apply requires a run id, e.g. loope apply 0001");
         process::exit(2);
     };
     let cwd = current_dir_or_exit();
-    let run_dir = cwd.join(".loope").join("runs").join(&run_id);
+    let base = cwd.join(".loope").join("runs");
+    let run_id = resolve_run(&base, &query);
+    let run_dir = base.join(&run_id);
     let workspace = run_dir.join("workspace");
     if !workspace.is_dir() {
         eprintln!("no run workspace found for {run_id} (looked at {})", workspace.display());
@@ -550,6 +554,32 @@ fn cmd_tui(args: &mut Vec<String>) {
 const TUI_HINT: &str =
     "the TUI requires a build with the `tui` feature: `cargo install --path . --features tui`";
 
+/// Resolve a run reference to a directory name: an exact id, or any unique prefix (like a
+/// short git hash, e.g. `0007`). Unmatched references pass through so the caller reports
+/// "not found"; ambiguous prefixes exit with the candidates.
+fn resolve_run(base: &Path, query: &str) -> String {
+    if base.join(query).is_dir() {
+        return query.to_string();
+    }
+    let mut matches: Vec<String> = fs::read_dir(base)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(query))
+        .collect();
+    matches.sort();
+    match matches.len() {
+        1 => matches.remove(0),
+        0 => query.to_string(),
+        _ => {
+            eprintln!("ambiguous run '{query}' — matches: {}", matches.join(", "));
+            process::exit(2);
+        }
+    }
+}
+
 /// Concatenate every step's `changes.diff` for a run, in step order.
 fn collect_run_diffs(run_dir: &Path) -> String {
     // Prefer the run-level cumulative diff; fall back to concatenating per-step diffs
@@ -608,11 +638,9 @@ fn list_run_ids(base: &Path) -> io::Result<Vec<String>> {
     if base.exists() {
         for entry in fs::read_dir(base)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("run-") {
-                    ids.push(name);
-                }
+            // A run directory is any directory that holds a run.json.
+            if entry.file_type()?.is_dir() && entry.path().join("run.json").is_file() {
+                ids.push(entry.file_name().to_string_lossy().to_string());
             }
         }
     }

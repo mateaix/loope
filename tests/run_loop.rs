@@ -36,7 +36,7 @@ fn run_dry_run_executes_loop_and_writes_run_directory() {
     assert!(stdout.contains("implementer via Claude"));
     assert!(stdout.contains("reviewer via Codex"));
 
-    let run = cwd.join(".loope").join("runs").join("run-0001");
+    let run = cwd.join(".loope").join("runs").join("0001-add-login");
     assert!(run.join("plan.md").exists());
     assert!(run.join("report.md").exists());
     assert!(run.join("run.json").exists());
@@ -74,7 +74,7 @@ fn design_dry_run_includes_designer_step() {
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     assert!(stdout.contains("designer via Claude"));
 
-    let run = cwd.join(".loope").join("runs").join("run-0001");
+    let run = cwd.join(".loope").join("runs").join("0001-build-dashboard");
     assert!(
         run.join("agents")
             .join("01-designer-claude")
@@ -106,7 +106,7 @@ fn design_command_produces_a_contract() {
     assert!(
         cwd.join(".loope")
             .join("runs")
-            .join("run-0001")
+            .join("0001-build-a-settings-page")
             .join("design-contract.md")
             .exists()
     );
@@ -135,14 +135,14 @@ fn runs_and_show_report_a_produced_run() {
         .expect("runs");
     assert!(runs.status.success());
     let runs_out = String::from_utf8(runs.stdout).unwrap();
-    assert!(runs_out.contains("run-0001"));
+    assert!(runs_out.contains("0001-add-login"));
     // the listing now shows each run's outcome and step count
     assert!(runs_out.contains("converged"));
     assert!(runs_out.contains("steps"));
 
     // show prints its report
     let show = Command::new(exe)
-        .args(["show", "run-0001"])
+        .args(["show", "0001"])
         .current_dir(&cwd)
         .output()
         .expect("show");
@@ -169,8 +169,8 @@ fn run_ids_increment_across_runs() {
     }
 
     let runs_dir = cwd.join(".loope").join("runs");
-    assert!(runs_dir.join("run-0001").exists());
-    assert!(runs_dir.join("run-0002").exists());
+    assert!(runs_dir.join("0001-add-login").exists());
+    assert!(runs_dir.join("0002-add-login").exists());
 
     let _ = fs::remove_dir_all(&cwd);
 }
@@ -194,7 +194,7 @@ fn multiple_reviewers_each_get_a_step() {
     let agents = cwd
         .join(".loope")
         .join("runs")
-        .join("run-0001")
+        .join("0001-add-login")
         .join("agents");
     assert!(agents.join("02-reviewer-codex").join("result.md").exists());
     assert!(agents.join("03-reviewer-claude").join("result.md").exists());
@@ -237,7 +237,7 @@ fn run_writes_events_and_show_diff_prints_changes() {
     let events = cwd
         .join(".loope")
         .join("runs")
-        .join("run-0001")
+        .join("0001-add-login")
         .join("agents")
         .join("01-implementer-claude")
         .join("events.jsonl");
@@ -246,7 +246,7 @@ fn run_writes_events_and_show_diff_prints_changes() {
 
     // the report shows change stats
     let report = Command::new(exe)
-        .args(["show", "run-0001"])
+        .args(["show", "0001"])
         .current_dir(&cwd)
         .output()
         .expect("show");
@@ -255,7 +255,7 @@ fn run_writes_events_and_show_diff_prints_changes() {
 
     // show --diff prints the persisted unified diff
     let diff = Command::new(exe)
-        .args(["show", "run-0001", "--diff"])
+        .args(["show", "0001", "--diff"])
         .current_dir(&cwd)
         .output()
         .expect("show --diff");
@@ -280,7 +280,7 @@ fn dry_run_converges_in_one_iteration() {
 
     // The stub reviewer passes, so the loop converges in one iteration: implement (1)
     // and review (2) only, each in its own numbered directory.
-    let run = cwd.join(".loope").join("runs").join("run-0001");
+    let run = cwd.join(".loope").join("runs").join("0001-add-login");
     let agents = run.join("agents");
     assert!(agents.join("01-implementer-claude").join("result.md").exists());
     assert!(agents.join("02-reviewer-codex").join("result.md").exists());
@@ -309,7 +309,7 @@ fn apply_lands_a_dry_run_change_into_a_target() {
 
     let target = temp_dir("applytgt");
     let apply = Command::new(exe)
-        .args(["apply", "run-0001", "--workdir"])
+        .args(["apply", "0001", "--workdir"])
         .arg(&target)
         .current_dir(&cwd)
         .output()

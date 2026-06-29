@@ -27,7 +27,7 @@ const SKIP_FILES: &[&str] = &[".DS_Store"];
 /// One run's directory tree.
 #[derive(Clone, Debug)]
 pub struct RunWorkspace {
-    /// Run id, e.g. `run-0001`.
+    /// Run id, e.g. `0007-add-jwt-auth`.
     pub run_id: String,
     /// Run root: `<base>/<run-id>`.
     pub root: PathBuf,
@@ -41,9 +41,14 @@ impl RunWorkspace {
     /// Create the next run directory under `base`, seeding the working tree from
     /// `source`. When `in_place` is true the working tree IS `source` (no copy);
     /// otherwise `source` is copied into `<run>/workspace/`.
-    pub fn create(base: &Path, source: &Path, in_place: bool) -> io::Result<Self> {
+    pub fn create(
+        base: &Path,
+        source: &Path,
+        in_place: bool,
+        requirement: &str,
+    ) -> io::Result<Self> {
         fs::create_dir_all(base)?;
-        let run_id = next_run_id(base)?;
+        let run_id = next_run_id(base, requirement)?;
         let root = base.join(&run_id);
         fs::create_dir_all(&root)?;
 
@@ -85,22 +90,57 @@ impl RunWorkspace {
     }
 }
 
-/// Allocate the next `run-NNNN` id by scanning existing run directories.
-pub fn next_run_id(base: &Path) -> io::Result<String> {
+/// Allocate the next run id: a zero-padded sequence number plus a slug of the
+/// requirement, e.g. `0008-add-jwt-auth`. The number keeps runs ordered and uniquely
+/// referenceable; the slug makes the directory self-describing.
+pub fn next_run_id(base: &Path, requirement: &str) -> io::Result<String> {
     let mut max = 0usize;
     if base.exists() {
         for entry in fs::read_dir(base)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if let Some(suffix) = name.strip_prefix("run-")
-                && let Ok(n) = suffix.parse::<usize>()
-            {
+            if let Some(n) = run_number(&entry?.file_name().to_string_lossy()) {
                 max = max.max(n);
             }
         }
     }
-    Ok(format!("run-{:04}", max + 1))
+    let n = max + 1;
+    let slug = slugify(requirement);
+    Ok(if slug.is_empty() {
+        format!("{n:04}")
+    } else {
+        format!("{n:04}-{slug}")
+    })
+}
+
+/// The leading sequence number of a run directory name, tolerating the legacy `run-NNNN`
+/// scheme as well as the current `NNNN-slug`.
+fn run_number(name: &str) -> Option<usize> {
+    let digits: String = name
+        .strip_prefix("run-")
+        .unwrap_or(name)
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Turn a requirement into a short, filesystem-safe slug: lowercase ASCII words joined by
+/// `-`, capped at six words / 40 chars. Returns `""` when nothing usable remains.
+pub fn slugify(requirement: &str) -> String {
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    for c in requirement.chars() {
+        if c.is_ascii_alphanumeric() {
+            word.extend(c.to_lowercase());
+        } else if !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    let mut slug = words.into_iter().take(6).collect::<Vec<_>>().join("-");
+    slug.truncate(40);
+    slug.trim_matches('-').to_string()
 }
 
 /// Reduce an id to a safe single path component: ASCII alphanumerics, `-`, and `_`
@@ -539,13 +579,24 @@ mod tests {
     }
 
     #[test]
-    fn run_ids_increment() {
+    fn run_ids_increment_with_slug() {
         let base = temp_base("ids");
-        assert_eq!(next_run_id(&base).unwrap(), "run-0001");
-        fs::create_dir_all(base.join("run-0001")).unwrap();
+        assert_eq!(next_run_id(&base, "Add JWT auth").unwrap(), "0001-add-jwt-auth");
+        // The number advances past existing runs (current and legacy schemes alike).
+        fs::create_dir_all(base.join("0001-add-jwt-auth")).unwrap();
         fs::create_dir_all(base.join("run-0007")).unwrap();
-        assert_eq!(next_run_id(&base).unwrap(), "run-0008");
+        assert_eq!(next_run_id(&base, "Fix bug").unwrap(), "0008-fix-bug");
+        // A requirement with nothing slug-able falls back to just the number.
+        assert_eq!(next_run_id(&base, "🎉🎉").unwrap(), "0008");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn slugify_is_short_and_safe() {
+        assert_eq!(slugify("Add a multiply(a, b) function!"), "add-a-multiply-a-b-function");
+        assert_eq!(slugify("  trailing -- dashes  "), "trailing-dashes");
+        assert_eq!(slugify(""), "");
+        assert!(!slugify("a/../b").contains('/'));
     }
 
     #[test]
@@ -570,8 +621,8 @@ mod tests {
         fs::create_dir_all(source.join(".claude")).unwrap();
         fs::write(source.join(".claude").join("settings.json"), "{}").unwrap();
 
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
-        assert_eq!(ws.run_id, "run-0001");
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false, "demo run").unwrap();
+        assert_eq!(ws.run_id, "0001-demo-run");
         // copied the real file but skipped target/, .claude/, and .DS_Store
         assert!(ws.workspace_dir.join("a.txt").exists());
         assert!(!ws.workspace_dir.join("target").exists());

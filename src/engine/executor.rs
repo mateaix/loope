@@ -873,7 +873,7 @@ mod tests {
     fn run(cfg: &LoopConfig, invoker: &(dyn Invoker + Sync)) -> (LoopRun, RunWorkspace) {
         let base = temp_base("base");
         let source = temp_base("src");
-        let ws = RunWorkspace::create(&base.join("runs"), &source, false).unwrap();
+        let ws = RunWorkspace::create(&base.join("runs"), &source, false, "demo run").unwrap();
         let run = execute_loop(cfg, &ws, invoker, None).unwrap();
         (run, ws)
     }

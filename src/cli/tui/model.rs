@@ -13,6 +13,8 @@ pub struct RunEntry {
     pub stop_reason: String,
     pub iterations: usize,
     pub steps: usize,
+    /// A relative "when it ran" hint, e.g. `2h ago`.
+    pub age: String,
 }
 
 /// A whole run, as shown in the detail pane.
@@ -48,15 +50,12 @@ pub fn load_runs(base: &Path) -> Vec<RunEntry> {
     let Ok(read) = fs::read_dir(base) else {
         return Vec::new();
     };
+    // Any directory holding a run.json is a run, regardless of its name (so the new
+    // `NNNN-slug` ids and the legacy `run-NNNN` both load); sort newest-first by name.
     let mut dirs: Vec<PathBuf> = read
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| {
-            p.is_dir()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("run-"))
-        })
+        .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
     dirs.reverse();
@@ -65,14 +64,37 @@ pub fn load_runs(base: &Path) -> Vec<RunEntry> {
 
 fn load_entry(dir: &Path) -> Option<RunEntry> {
     let id = dir.file_name()?.to_str()?.to_string();
-    let json = fs::read_to_string(dir.join("run.json")).ok()?;
+    let path = dir.join("run.json");
+    let json = fs::read_to_string(&path).ok()?;
     Some(RunEntry {
         id,
         converged: json.contains("\"converged\":true"),
         stop_reason: json_str(&json, "stop_reason").unwrap_or_default(),
         iterations: json_num(&json, "iterations").unwrap_or(0),
         steps: json.matches("\"role\":").count(),
+        age: file_age(&path),
     })
+}
+
+/// A relative age for a file (how long ago it was written), or `""` if unavailable.
+fn file_age(path: &Path) -> String {
+    let Some(secs) = fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+        .map(|d| d.as_secs())
+    else {
+        return String::new();
+    };
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
 }
 
 /// Load a run's full detail by parsing its `report.md`.

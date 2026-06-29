@@ -21,13 +21,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 ("✗", style::FAIL)
             };
+            let mut meta = format!("  {} · {} steps", run.stop_reason, run.steps);
+            if !run.age.is_empty() {
+                meta.push_str(&format!(" · {}", run.age));
+            }
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{mark} "), Style::new().fg(color)),
                 Span::raw(run.id.clone()),
-                Span::styled(
-                    format!("  {} · {} steps", run.stop_reason, run.steps),
-                    Style::new().fg(style::DIM),
-                ),
+                Span::styled(meta, Style::new().fg(style::DIM)),
             ]))
         })
         .collect();

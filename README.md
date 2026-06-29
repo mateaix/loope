@@ -76,9 +76,9 @@ loope run --dry-run "Add login"              # execute the loop with stub agents
 loope run "Add login"                        # execute by driving the real CLIs
 loope run --show-diff "Add login"            # …and print the cumulative diff after
 loope                                        # open the interactive prompt (needs --features tui)
-loope runs                                   # list past runs
-loope show run-0001                          # print a past run's report
-loope apply run-0001                         # land a run's changes into your tree
+loope runs                                   # list past runs (e.g. 0007-add-jwt-auth)
+loope show 0007                              # print a past run's report (id or unique prefix)
+loope apply 0007                             # land a run's changes into your tree
 loope tui                                    # interactive run browser (needs --features tui)
 loope doctor                                 # self-check the local agent CLIs
 loope adapters                               # list supported adapters
@@ -130,7 +130,7 @@ loop halts with OpenCode's message) rather than a crash.
 ### Run directory layout
 
 ```text
-.loope/runs/run-0001/
+.loope/runs/0001-add-login/
   plan.md              the generated loop plan
   report.md            final loop report (steps grouped by iteration + outcome)
   run.json             machine-readable run record (iterations, stop_reason, converged)
@@ -201,7 +201,7 @@ After each write step, the **changed files and `+/−` line stats** are shown li
 the report; a unified diff is persisted to `agents/<step>/changes.diff`. View it with:
 
 ```bash
-loope show run-0001 --diff      # colored summary + the run's diffs
+loope show 0001 --diff      # colored summary + the run's diffs
 loope run --quiet "..."         # suppress the live feed; keep step results
 ```
 

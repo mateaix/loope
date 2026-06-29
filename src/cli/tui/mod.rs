@@ -103,7 +103,7 @@ impl Session {
     /// Start a run for `requirement` on a worker thread per `options`, returning its live
     /// channel.
     fn start(&self, requirement: String, options: &RunOptions) -> io::Result<RunHandle> {
-        let workspace = RunWorkspace::create(&self.base, &self.cwd, false)?;
+        let workspace = RunWorkspace::create(&self.base, &self.cwd, false, &requirement)?;
         let run_id = workspace.run_id.clone();
         let run_dir = workspace.root.clone();
         let config = options.config(requirement);
