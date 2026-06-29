@@ -299,6 +299,17 @@ exercise the real agents manually:
 3. Inspect `.loope/runs/<run-id>/` — each agent's `prompt.md`, `transcript.jsonl`, and
    `result.md`, plus the final `report.md`.
 
+## Benchmarks
+
+[`benchmarks/`](benchmarks/) measures whether the convergent review loop delivers more
+reliable software than a single shot — separating the **harness** (Loope's orchestration)
+from the **model** (the agent). A hermetic tier (`benchmarks/hermetic.sh`, `--dry-run`, no
+network) checks determinism, convergence gating, and harness overhead; a delivery tier runs
+real agents on SWE-bench-style cases and reports resolve rate, the **catch-and-fix rate**
+(Loope's signature metric), and token economy. Measured hermetic results: byte-identical
+runs (deterministic), **~21 ms** harness overhead per loop (model excluded), and honest
+gating (no false "converged"). See [`benchmarks/README.md`](benchmarks/README.md).
+
 ## Architecture
 
 The source is grouped by role into four domains, each layer depending only on the ones

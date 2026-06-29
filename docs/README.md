@@ -9,6 +9,7 @@ different readers:
 | [`specs/`](specs/) | **contributors** | SDD specs: what each capability is and why |
 | [`plans/`](plans/) | **contributors** | SDD implementation plans: the task breakdown per capability |
 | [`prototype/`](prototype/) | **contributors** | the product narrative / prototype |
+| [`../benchmarks/`](../benchmarks/) | **contributors** | evaluation methodology, metrics, runners, and results |
 
 ## Start here
 

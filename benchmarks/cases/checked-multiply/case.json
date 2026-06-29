@@ -1,0 +1,7 @@
+{
+  "id": "checked-multiply",
+  "lang": "rust",
+  "requirement": "Make the `multiply` function safe against i64 overflow: it must saturate at i64::MAX / i64::MIN instead of panicking or wrapping.",
+  "verify_cmd": "cargo test",
+  "trap": "A naive `a * b` panics on overflow in debug and wraps in release. The hidden test `multiply(i64::MAX, 2) == i64::MAX` forces a *saturating* implementation, so a plausible-but-wrong first pass (checked_mul().unwrap(), wrapping_mul) compiles yet fails — the kind of defect the review loop should catch and fix."
+}
