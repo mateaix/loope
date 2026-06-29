@@ -11,8 +11,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use loope::adapter::event::{ActionKind, LoopEvent};
-use loope::engine::{StepObserver, StepOutcome};
 use loope::engine::workspace::FileChange;
+use loope::engine::{Highlight, StepObserver, StepOutcome};
 use loope::{Adapter, LoopStep, Role};
 
 const RESET: &str = "\x1b[0m";
@@ -501,6 +501,42 @@ impl StepObserver for LiveObserver {
 /// Render a Loope report. In plain mode the markdown is printed verbatim (so piping
 /// and tests are unchanged); in color mode it becomes a summary box plus a colored
 /// per-step recap. Used by both `run` (final output) and `show`.
+/// Print the convergence highlight — the run's "caught & fixed" hero moment.
+pub fn print_highlight(h: &Highlight, color: bool) {
+    let outcome = if h.converged { "converged" } else { "review passed" };
+    let changes = if h.fix_changes.is_empty() {
+        String::new()
+    } else {
+        format!("   {}", h.fix_changes.join(", "))
+    };
+
+    if !color {
+        println!("\n  caught & fixed");
+        println!("  x {} flagged (iteration {})", h.reviewer, h.flagged_iter);
+        println!("      {}", h.finding);
+        println!("  + {} fixed (iteration {}){changes}", h.implementer, h.fixed_iter);
+        println!("  = {outcome} · blocker found -> fixed");
+        return;
+    }
+
+    let brand = fg(28, 155, 240);
+    let green = fg(GREEN.0, GREEN.1, GREEN.2);
+    let red = fg(RED.0, RED.1, RED.2);
+    let rev = adapter_color_by_name(&h.reviewer);
+    let imp = adapter_color_by_name(&h.implementer);
+    println!("\n  {brand}{BOLD}✦ caught & fixed{RESET}");
+    println!(
+        "  {red}✗{RESET} {rev}{}{RESET} {DIM}flagged · iteration {}{RESET}",
+        h.reviewer, h.flagged_iter
+    );
+    println!("      {}", h.finding);
+    println!(
+        "  {brand}✎{RESET} {imp}{}{RESET} {DIM}fixed · iteration {}{changes}{RESET}",
+        h.implementer, h.fixed_iter
+    );
+    println!("  {green}✓ {outcome}{RESET}   {DIM}blocker found → fixed{RESET}");
+}
+
 pub fn print_report(md: &str, run_dir: Option<&std::path::Path>, color: bool) {
     if !color {
         print!("{md}");

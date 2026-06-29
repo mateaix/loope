@@ -273,6 +273,7 @@ prefix (`0007`). Everything about a run lives under `.loope/runs/<run-id>/` (git
   run.json                machine-readable run record (iterations, stop_reason, converged)
   changes.diff            the run's cumulative diff (original source → final workspace)
   changed-files.txt       the cumulative changed-file listing (used by `loope apply`)
+  highlight               the "caught & fixed" card (only when a review caught a blocker)
   design-contract.md      the Design Contract (with --design or `loope design`)
   workspace/              the working tree the agents read and edit (a copy by default)
   agents/                 one numbered directory per step, across all iterations
@@ -403,6 +404,22 @@ requirement runs up to five iterations. The configuration mirrors the `loope run
 Both TUI commands require an interactive terminal. On a build **without** the `tui`
 feature they print a hint and exit `2`; `loope run` without `--tui` is unchanged (the
 streaming print feed).
+
+## Convergence highlight
+
+When a reviewer catches a real blocker that a later iteration fixes — the loop's whole
+point — `loope run` and `loope show` lead with a **highlight card**, and the TUI shows it
+atop the run detail:
+
+```text
+✦ caught & fixed
+✗ Codex flagged · iter 1   token comparison is not constant-time (timing attack)
+✎ Claude fixed · iter 2    src/auth.rs +12 −3
+✓ converged · blocker found → fixed
+```
+
+It appears only when the review *earned* it (no card for a first-try convergence). Suppress
+with `--no-highlight`.
 
 ## Diffs & change tracking
 

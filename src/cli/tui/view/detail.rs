@@ -1,10 +1,11 @@
 //! The run-detail pane (right): the steps grouped by iteration on top, and a preview of
 //! the selected step (result / diff / transcript) below.
 
+use loope::engine::Highlight;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use super::super::app::{App, Focus};
@@ -18,11 +19,61 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // The hero card leads the pane when the review caught & fixed a blocker.
+    let body = if let Some(highlight) = &detail.highlight {
+        let [card, rest] =
+            Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).areas(area);
+        render_highlight(frame, highlight, card);
+        rest
+    } else {
+        area
+    };
+
     let [steps_area, preview_area] =
-        Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
+        Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body);
 
     render_steps(frame, app, detail, steps_area);
     preview::render(frame, app, detail, preview_area);
+}
+
+/// The "caught & fixed" card: ✗ flagged → ✎ fixed → ✓ passed.
+fn render_highlight(frame: &mut Frame, highlight: &Highlight, area: Rect) {
+    let outcome = if highlight.converged { "converged" } else { "review passed" };
+    let changes = highlight.fix_changes.join(", ");
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("✗ ", Style::new().fg(style::FAIL)),
+            Span::styled(
+                highlight.reviewer.clone(),
+                Style::new().fg(style::adapter_color(&highlight.reviewer)),
+            ),
+            Span::styled(
+                format!(" flagged · iter {}   ", highlight.flagged_iter),
+                Style::new().fg(style::DIM),
+            ),
+            Span::raw(highlight.finding.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("✎ ", Style::new().fg(style::BRAND)),
+            Span::styled(
+                highlight.implementer.clone(),
+                Style::new().fg(style::adapter_color(&highlight.implementer)),
+            ),
+            Span::styled(
+                format!(" fixed · iter {}   ", highlight.fixed_iter),
+                Style::new().fg(style::DIM),
+            ),
+            Span::styled(changes, Style::new().fg(style::DIM)),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("✓ {outcome}"), Style::new().fg(style::PASS)),
+            Span::styled("   blocker found → fixed", Style::new().fg(style::DIM)),
+        ]),
+    ];
+    let block = Block::bordered()
+        .title(Span::styled(" ✦ caught & fixed ", Style::new().fg(style::BRAND).bold()))
+        .border_style(Style::new().fg(style::BRAND));
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_steps(frame: &mut Frame, app: &App, detail: &super::super::model::RunDetail, area: Rect) {

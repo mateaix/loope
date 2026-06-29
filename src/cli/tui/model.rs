@@ -28,6 +28,8 @@ pub struct RunDetail {
     pub took: String,
     pub steps: Vec<StepView>,
     pub dir: PathBuf,
+    /// The "caught & fixed" highlight, when the review earned its keep.
+    pub highlight: Option<loope::engine::Highlight>,
 }
 
 /// One executed step within a run.
@@ -97,10 +99,14 @@ fn file_age(path: &Path) -> String {
     }
 }
 
-/// Load a run's full detail by parsing its `report.md`.
+/// Load a run's full detail by parsing its `report.md`, plus the highlight if present.
 pub fn load_run(dir: &Path) -> Option<RunDetail> {
     let md = fs::read_to_string(dir.join("report.md")).ok()?;
-    Some(parse_report(&md, dir))
+    let mut detail = parse_report(&md, dir);
+    detail.highlight = fs::read_to_string(dir.join("highlight"))
+        .ok()
+        .and_then(|text| loope::engine::Highlight::from_storage(&text));
+    Some(detail)
 }
 
 /// Parse `report.md` (the format produced by `LoopRun::to_report_markdown`).

@@ -350,6 +350,24 @@ mod tests {
     }
 
     #[test]
+    fn highlight_card_renders_when_present() {
+        let dir = temp_runs();
+        fs::write(
+            dir.join("run-0001").join("highlight"),
+            "reviewer: Codex\nflagged: 1\nimplementer: Claude\nfixed: 2\nconverged: true\nfinding: overflow in multiply panics\nchange: src/lib.rs +5 -1\n",
+        )
+        .unwrap();
+        let app = App::new(&dir);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| view::draw(frame, &app)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(text.contains("caught & fixed"));
+        assert!(text.contains("overflow in multiply panics"));
+        assert!(text.contains("blocker found"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn command_mode_frame_shows_palette() {
         let dir = temp_runs();
         let mut app = App::home(&dir, true);

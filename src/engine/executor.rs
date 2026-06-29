@@ -110,6 +110,8 @@ pub struct LoopRun {
     pub stop_reason: StopReason,
     /// Cumulative per-file changes from the original source to the final workspace.
     pub changed: Vec<FileChange>,
+    /// The "caught & fixed" hero moment, when the review earned its keep.
+    pub highlight: Option<crate::engine::Highlight>,
     /// Total wall-clock time of the run, in milliseconds.
     pub total_ms: u64,
 }
@@ -208,10 +210,11 @@ impl LoopRun {
             .collect();
 
         format!(
-            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"converged\":{},\"iterations\":{},\"stop_reason\":\"{}\",\"steps\":[{}]}}\n",
+            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"converged\":{},\"highlight\":{},\"iterations\":{},\"stop_reason\":\"{}\",\"steps\":[{}]}}\n",
             json_escape(&self.run_id),
             json_escape(&self.requirement),
             self.all_passed(),
+            self.highlight.is_some(),
             self.iterations,
             self.stop_reason.as_str(),
             steps.join(",")
@@ -482,6 +485,12 @@ fn finalize(
         .collect();
     atomic_write(&workspace.root.join("changed-files.txt"), &listing)?;
 
+    // The hero moment: a reviewer caught a blocker that a later iteration fixed.
+    let highlight = crate::engine::Highlight::detect(&outcomes, stop_reason);
+    if let Some(highlight) = &highlight {
+        atomic_write(&workspace.root.join("highlight"), &highlight.to_storage())?;
+    }
+
     let run = LoopRun {
         run_id: workspace.run_id.clone(),
         requirement: requirement.to_string(),
@@ -489,6 +498,7 @@ fn finalize(
         iterations,
         stop_reason,
         changed,
+        highlight,
         total_ms: started.elapsed().as_millis() as u64,
     };
     atomic_write(&workspace.root.join("report.md"), &run.to_report_markdown())?;

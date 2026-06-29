@@ -212,6 +212,7 @@ fn cmd_run(args: &mut Vec<String>) {
         .unwrap_or(3)
         .max(1);
     let show_diff = remove_flag(args, "--show-diff");
+    let no_highlight = remove_flag(args, "--no-highlight");
     let tui = remove_flag(args, "--tui");
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
@@ -362,6 +363,9 @@ fn cmd_run(args: &mut Vec<String>) {
         r.stop();
     }
 
+    if !no_highlight && let Some(highlight) = &run.highlight {
+        ui::print_highlight(highlight, color);
+    }
     ui::print_report(&run.to_report_markdown(), Some(&workspace.root), color);
 
     if show_diff {
@@ -419,6 +423,7 @@ fn cmd_show(args: &mut Vec<String>) {
     let color = ColorChoice::parse(&remove_value(args, "--color").unwrap_or_default()).enabled();
     apply_color_level(color);
     let show_diff = remove_flag(args, "--diff");
+    let no_highlight = remove_flag(args, "--no-highlight");
     let Some(query) = args.first() else {
         eprintln!("loope show requires a run id, e.g. loope show 0001");
         process::exit(2);
@@ -429,7 +434,16 @@ fn cmd_show(args: &mut Vec<String>) {
     let run_dir = base.join(&run_id);
     let report = run_dir.join("report.md");
     match fs::read_to_string(&report) {
-        Ok(contents) => ui::print_report(&contents, Some(&run_dir), color),
+        Ok(contents) => {
+            if !no_highlight
+                && let Some(highlight) = fs::read_to_string(run_dir.join("highlight"))
+                    .ok()
+                    .and_then(|t| loope::engine::Highlight::from_storage(&t))
+            {
+                ui::print_highlight(&highlight, color);
+            }
+            ui::print_report(&contents, Some(&run_dir), color);
+        }
         Err(_) => {
             eprintln!("no report found for {run_id} (looked at {})", report.display());
             process::exit(1);
