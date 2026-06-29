@@ -43,15 +43,14 @@ Run it:
 
 ```bash
 cd src-tauri
-cargo tauri dev      # run in development — no icons required
+cargo tauri dev      # run in development
 ```
 
-**Icons are optional for development** (`bundle.icon` is empty, so the app uses a default
-window icon). You only need to generate them before producing a distributable bundle:
+A default brand icon set ships in `icons/` so the app builds out of the box. To use your
+own logo, regenerate them (writes all sizes + `.icns`/`.ico` for distribution):
 
 ```bash
-cargo tauri icon path/to/logo.png   # writes icons/… (see icons/README.md)
-# then add those paths back into bundle.icon in tauri.conf.json, and:
+cargo tauri icon path/to/logo.png
 cargo tauri build
 ```
 
