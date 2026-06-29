@@ -190,9 +190,13 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .block(block),
         area,
     );
-    let typed = app.input.chars().count().min(u16::MAX as usize) as u16;
-    let cursor_x = inner.x.saturating_add(2).saturating_add(typed);
-    frame.set_cursor_position((cursor_x.min(inner.x + inner.width), inner.y));
+    // Use the display width (CJK/fullwidth glyphs take two cells), matching exactly how
+    // ratatui lays out the text, so the cursor stays on the last typed character.
+    let prefix = Span::raw("› ").width() as u16;
+    let typed = Span::raw(app.input.as_str()).width().min(u16::MAX as usize) as u16;
+    let cursor_x = inner.x.saturating_add(prefix).saturating_add(typed);
+    let max_x = inner.x + inner.width.saturating_sub(1);
+    frame.set_cursor_position((cursor_x.min(max_x), inner.y));
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
