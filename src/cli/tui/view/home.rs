@@ -211,7 +211,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled(format!(" {message}"), Style::new().fg(style::BRAND)))
     } else if app.command_mode() {
         Line::from(Span::styled(
-            " ↑/↓ select · Tab complete · Enter run · Esc cancel ",
+            " ↑/↓ select · Enter pick · Tab complete · Esc cancel ",
             Style::new().fg(style::DIM),
         ))
     } else {

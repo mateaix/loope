@@ -276,8 +276,20 @@ impl App {
         self.palette_index = 0;
     }
 
-    /// Parse and run the typed command, setting a status message.
+    /// Run the command. If the input isn't a complete command yet, act on the highlighted
+    /// palette entry: run it when it takes no argument, or fill it in (ready for the
+    /// argument) when it does.
     pub fn run_command(&mut self) {
+        if command::parse(&self.input).is_err()
+            && let Some(spec) = self.palette().get(self.palette_selected()).copied()
+        {
+            if spec.args.is_empty() {
+                self.input = format!("/{}", spec.name); // a no-arg command → run it below
+            } else {
+                self.input = format!("/{} ", spec.name); // needs an argument → wait for it
+                return;
+            }
+        }
         match command::parse(&self.input) {
             Ok(cmd) => {
                 self.apply_command(cmd);

@@ -458,6 +458,27 @@ mod tests {
     }
 
     #[test]
+    fn palette_enter_picks_the_selected_command() {
+        let dir = temp_runs();
+        let mut app = App::home(&dir, true);
+        // "/" with the first entry (/iters, needs an arg) selected → Enter fills it in.
+        app.input_char('/');
+        app.run_command();
+        assert_eq!(app.input, "/iters ");
+        // Select a no-arg command (/design at index 5) → Enter runs it.
+        app.clear_input();
+        app.input_char('/');
+        for _ in 0..5 {
+            app.palette_move(true);
+        }
+        let before = app.options.include_design;
+        app.run_command();
+        assert_ne!(app.options.include_design, before);
+        assert!(app.input.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn command_mode_frame_shows_palette() {
         let dir = temp_runs();
         let mut app = App::home(&dir, true);
