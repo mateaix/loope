@@ -2,4 +2,6 @@
 //! report/diff printing ([`ui`]) plus color-capability detection ([`theme`]).
 
 pub mod theme;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod ui;

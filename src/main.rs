@@ -30,6 +30,7 @@ fn main() {
         "runs" => cmd_runs(&mut args),
         "show" => cmd_show(&mut args),
         "apply" => cmd_apply(&mut args),
+        "tui" => cmd_tui(&mut args),
         "adapters" => {
             for adapter in list_adapters() {
                 println!("{}", adapter.as_str());
@@ -180,6 +181,7 @@ fn cmd_run(args: &mut Vec<String>) {
         .unwrap_or(3)
         .max(1);
     let show_diff = remove_flag(args, "--show-diff");
+    let tui = remove_flag(args, "--tui");
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
@@ -194,6 +196,18 @@ fn cmd_run(args: &mut Vec<String>) {
     if approve != "auto" && approve != "manual" {
         eprintln!("--approve must be 'auto' or 'manual'.");
         process::exit(2);
+    }
+    if tui {
+        #[cfg(not(feature = "tui"))]
+        {
+            eprintln!("{TUI_HINT}");
+            process::exit(2);
+        }
+        #[cfg(feature = "tui")]
+        if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            eprintln!("--tui needs an interactive terminal.");
+            process::exit(2);
+        }
     }
 
     let cwd = current_dir_or_exit();
@@ -234,12 +248,12 @@ fn cmd_run(args: &mut Vec<String>) {
         },
     );
 
-    if approve == "manual" && !confirm_plan(&plan, &source, in_place) {
+    if !tui && approve == "manual" && !confirm_plan(&plan, &source, in_place) {
         eprintln!("aborted before launching any agent.");
         process::exit(1);
     }
 
-    if color {
+    if color && !tui {
         ui::banner(true);
         // One iteration's roles, in order; the ↻ marks that it repeats to convergence.
         let mut loop_steps: Vec<(Role, Adapter)> = Vec::new();
@@ -265,7 +279,7 @@ fn cmd_run(args: &mut Vec<String>) {
     };
     let _ = fs::write(workspace.root.join("plan.md"), plan.to_markdown());
 
-    let invoker: Box<dyn Invoker + Sync> = if dry_run {
+    let invoker: Box<dyn Invoker + Send + Sync> = if dry_run {
         Box::new(StubInvoker)
     } else {
         Box::new(SubprocessInvoker {
@@ -274,6 +288,19 @@ fn cmd_run(args: &mut Vec<String>) {
             timeout,
         })
     };
+
+    // Full-screen live dashboard: hand the loop to the TUI and return when it quits.
+    #[cfg(feature = "tui")]
+    if tui {
+        match cli::tui::run_live(config, workspace, invoker) {
+            Ok(()) => return,
+            Err(err) => {
+                eprintln!("tui error: {err}");
+                process::exit(1);
+            }
+        }
+    }
+
     // Live mode (TTY color, progress on) animates a pinned status line; otherwise the
     // committed-only PrettyObserver, or nothing in plain/piped output.
     let per_iter = 1 + config.reviewers.len() + usize::from(config.verify_command.is_some());
@@ -446,6 +473,36 @@ fn cmd_apply(args: &mut Vec<String>) {
     }
     println!("Applied {applied} file(s) from {run_id} into {}.", target.display());
 }
+
+/// Open the interactive TUI browser over `.loope/runs/` (requires `--features tui`).
+fn cmd_tui(args: &mut Vec<String>) {
+    let _ = remove_value(args, "--color"); // the TUI manages its own color
+    let cwd = current_dir_or_exit();
+    let runs_dir = cwd.join(".loope").join("runs");
+
+    #[cfg(feature = "tui")]
+    {
+        if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+            eprintln!("the TUI needs an interactive terminal.");
+            process::exit(2);
+        }
+        if let Err(err) = cli::tui::run_browser(&runs_dir) {
+            eprintln!("tui error: {err}");
+            process::exit(1);
+        }
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = runs_dir;
+        eprintln!("{TUI_HINT}");
+        process::exit(2);
+    }
+}
+
+/// Shown when a TUI command is invoked on a build without the `tui` feature.
+#[cfg(not(feature = "tui"))]
+const TUI_HINT: &str =
+    "the TUI requires a build with the `tui` feature: `cargo install --path . --features tui`";
 
 /// Concatenate every step's `changes.diff` for a run, in step order.
 fn collect_run_diffs(run_dir: &Path) -> String {
@@ -655,6 +712,7 @@ Usage:
   loope runs
   loope show <run-id> [--diff]
   loope apply <run-id> [--workdir DIR]
+  loope tui                                  (build with --features tui)
   loope adapters
 
 The loop iterates: an optional design step, then implement -> review -> verify repeated
@@ -664,6 +722,7 @@ run flags:
   --dry-run       Execute with deterministic stub agents (no external CLIs, no network).
   --max-iters N   Cap the implement -> review -> verify iterations (default 3; 1 = single pass).
   --show-diff     After the run, print the cumulative diff of everything that changed.
+  --tui           Watch the run in a full-screen dashboard (build with --features tui).
   --in-place      Operate on the working directory directly instead of a copied tree.
   --workdir DIR   Source directory to run against (default: current directory).
   --approve MODE  'auto' (default) or 'manual' (confirm before launching agents).

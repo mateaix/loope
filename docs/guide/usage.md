@@ -18,6 +18,7 @@ This is the complete usage reference. For the design rationale, see the
 - [Presets](#presets)
 - [The run directory](#the-run-directory)
 - [Terminal UI](#terminal-ui)
+- [Interactive TUI](#interactive-tui)
 - [Diffs & change tracking](#diffs--change-tracking)
 - [Design Contracts](#design-contracts)
 - [Safety & isolation](#safety--isolation)
@@ -51,6 +52,10 @@ After installing, make sure `~/.cargo/bin` is on your `PATH`.
 
 The deterministic `--dry-run` path needs no agent binaries or network. Real runs need
 the agent CLIs you choose (see [Adapters & providers](#adapters--providers)).
+
+The default build is **std only** (no external crates). The optional interactive
+[TUI](#interactive-tui) is the one feature with dependencies — build it with
+`--features tui` when you want it.
 
 > **Run inside a project directory**, not a shared/system path like `/tmp` — Loope seeds
 > the workspace by copying the current directory, and copying a directory full of other
@@ -151,6 +156,7 @@ Execute the full loop end to end and write a run directory.
 | `--design` | Insert a design-contract step before implementation |
 | `--max-iters N` | Cap the implement → review → verify iterations (default `3`; `1` = single pass) |
 | `--show-diff` | After the run, print the cumulative diff of everything that changed |
+| `--tui` | Watch the run in a full-screen dashboard (needs a `--features tui` build) |
 | `--workdir DIR` | Source directory to run against (default: current directory) |
 | `--in-place` | Edit the working directory directly instead of a copied tree |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`) |
@@ -298,6 +304,51 @@ the run's total time and stop reason.
 - Color is automatic on a terminal and off when piped or `NO_COLOR` is set; override with
   `--color auto|always|never`. Brand colors downgrade to 256-color when the terminal
   lacks truecolor. Piped/CI output is plain.
+
+## Interactive TUI
+
+Loope ships an optional full-screen **interactive terminal UI** for browsing runs and
+watching the loop live. It is built on [ratatui](https://ratatui.rs) and gated behind a
+`tui` cargo feature, so the **default build stays dependency-free** (std only) — you opt
+in when you build:
+
+```bash
+cargo install --path . --features tui     # install with the TUI
+cargo run --features tui -- tui            # …or run from source
+```
+
+Two entry points:
+
+```bash
+loope tui                  # browse .loope/runs interactively
+loope run --tui "..."      # watch a run execute in a full-screen dashboard
+```
+
+- **Browser** (`loope tui`) — a run list on the left; the selected run's steps grouped by
+  iteration on the right; a preview pane showing the focused step's result, its diff, or
+  its transcript.
+- **Live** (`loope run --tui`) — the same layout, updating as the loop runs (iteration
+  header + spinner, an activity feed for the active step, steps appearing as they finish).
+  When the run converges it settles into the browser view.
+
+Keys:
+
+| Key | Action |
+| --- | --- |
+| `↑`/`k`, `↓`/`j` | move selection |
+| `→`/`l`, `Enter` | open / focus the detail pane |
+| `←`/`h`, `Esc` | back / focus the run list |
+| `Tab` | switch pane |
+| `d` / `t` | toggle the diff / transcript preview |
+| `g` / `G` | top / bottom |
+| `PgUp` / `PgDn` | scroll the preview |
+| `r` | refresh the run list |
+| `?` | help overlay |
+| `q` / `Ctrl-C` | quit |
+
+Both TUI commands require an interactive terminal. On a build **without** the `tui`
+feature they print a hint and exit `2`; `loope run` without `--tui` is unchanged (the
+streaming print feed).
 
 ## Diffs & change tracking
 

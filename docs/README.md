@@ -31,6 +31,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Robustness (per-step timeout + per-step artifact directories)
 - Iterative loop (convergence, feedback, `apply`, cumulative diff) — v1.0
 - Source layout (domain-grouped modules: `model` / `adapter` / `engine` / `cli`)
+- Interactive TUI (ratatui browser + live dashboard, behind the optional `tui` feature)
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
 > run-directory detail changes, update [`guide/usage.md`](guide/usage.md) (and the

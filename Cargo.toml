@@ -13,4 +13,11 @@ path = "src/lib.rs"
 name = "loope"
 path = "src/main.rs"
 
+[features]
+# Off by default: the default build and the `loope` library stay dependency-free
+# (std only). `cargo build --features tui` adds the interactive terminal UI.
+# ratatui re-exports its crossterm backend, so it is the only TUI dependency.
+tui = ["dep:ratatui"]
+
 [dependencies]
+ratatui = { version = "0.30", optional = true }

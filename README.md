@@ -76,6 +76,7 @@ loope run --show-diff "Add login"            # …and print the cumulative diff 
 loope runs                                   # list past runs
 loope show run-0001                          # print a past run's report
 loope apply run-0001                         # land a run's changes into your tree
+loope tui                                    # interactive run browser (needs --features tui)
 loope adapters                               # list supported adapters
 ```
 
@@ -203,6 +204,23 @@ loope run --quiet "..."         # suppress the live feed; keep step results
 Color is automatic on a terminal and off when piped or when `NO_COLOR` is set; override
 with `--color auto|always|never`. Piped/CI output stays plain markdown.
 
+## Interactive TUI (optional)
+
+Beyond the streaming print feed, Loope has an optional full-screen **interactive TUI**
+(built on [ratatui](https://ratatui.rs)) for browsing runs and watching the loop live. It
+lives behind a `tui` cargo feature, so the **default build stays dependency-free** — opt
+in when you build:
+
+```bash
+cargo install --path . --features tui
+loope tui                 # browse .loope/runs: list ↔ steps ↔ diff/transcript
+loope run --tui "..."     # watch the loop run full-screen, then browse the result
+```
+
+Keyboard-first (`j/k`/arrows to move, `→`/`Enter` to drill in, `d`/`t` for diff/transcript,
+`?` for help, `q` to quit). Without the feature the TUI commands print a hint; everything
+else is unchanged. See the [usage guide](docs/guide/usage.md#interactive-tui).
+
 ## Supported adapters
 
 | Adapter     | Role                                | Binary (override env)        |
@@ -274,11 +292,13 @@ rationale.
 - [Robustness Spec](docs/specs/2026-06-28-loope-robustness-spec.md)
 - [Iterative Loop Spec (v1.0)](docs/specs/2026-06-28-loope-iterative-loop-spec.md)
 - [Source Layout Spec](docs/specs/2026-06-29-loope-source-layout-spec.md)
+- [TUI Spec](docs/specs/2026-06-29-loope-tui-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
 - [Iterative Loop Plan (v1.0)](docs/plans/2026-06-28-loope-iterative-loop-plan.md)
 - [Source Layout Plan](docs/plans/2026-06-29-loope-source-layout-plan.md)
+- [TUI Plan](docs/plans/2026-06-29-loope-tui-plan.md)
 
 ## License
 
