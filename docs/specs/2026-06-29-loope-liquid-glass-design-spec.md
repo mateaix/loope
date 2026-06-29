@@ -25,6 +25,10 @@ Principles:
    pulse / shimmer), never spins aggressively. Honor `prefers-reduced-motion`.
 5. **One identity across surfaces.** The accent and semantics match the TUI palette so the
    terminal and the desktop app are obviously the same tool.
+6. **One surface, not many cards.** A run's content is a *single scrollable transcript
+   panel*, not a stack of bordered cards. Each step is a lightweight row — a colored gutter +
+   a kind tag + its content — separated by hairlines and iteration dividers, with a quiet
+   glass scrollbar. The content gets the space; the chrome stays out of the way.
 
 ## Material & token system (CSS variables)
 
@@ -34,7 +38,7 @@ Tiers (background translucency + backdrop blur/saturation):
 | --- | --- | --- | --- |
 | `--glass-window` | the app window | blur 34 · saturate 190% | white 10% |
 | `--glass-panel` | sidebar, pipeline, command bar | blur 14 · saturate 150% | white 7% |
-| `--glass-cell` | execution cells, chips | blur 10 · saturate 140% | white 6% |
+| `--glass-cell` | chips, tags, inset scrim blocks | blur 10 · saturate 140% | white 6% |
 | `--glass-raise` | active/selected, hero card | — | white 14–16% |
 
 Light & depth:
@@ -81,8 +85,8 @@ Every desktop surface is a TUI capability restyled; behavior and vocabulary are 
 | Agents status line | **Agent switcher** — tinted chips in the title bar, each with the **tool's brand icon** + ✓/✗/version and a switch caret | pick implementer + reviewer roles; install hint when missing |
 | Workspace line (📁 path · ⎇ branch) | **Title bar context** | same project path + git branch/worktree |
 | Run list (left pane) | **Runs sidebar** — glass list, selected = `--glass-raise` | up/down select; grouped by project |
-| Detail steps grouped by iteration | **Pipeline panel** — implement→review→verify nodes + iteration badge | the same steps/iterations; live node tinted + pulsing |
-| Preview: result / diff / transcript | **Execution cells** — exec / diff / markdown / reasoning, each a `--glass-cell` | the same per-step content; compact ⇄ expanded |
+| Detail steps grouped by iteration | **Pipeline strip** — a compact sticky header (implement→review→verify nodes + iteration badge) atop the transcript | the same steps/iterations; live node tinted + pulsing |
+| Preview: result / diff / transcript | **Transcript panel** — *one* scrollable glass surface; each step is a lightweight row (colored gutter + kind tag), grouped by iteration dividers, long output in a scrim block | the same per-step content; rows expand ⇄ collapse |
 | Convergence highlight card | **Convergence hero** — `caught & fixed`, green-tinted glass | the same engine highlight (`Codex flagged → Claude fixed`) |
 | Live header (iteration k/N · spinner) | **Title bar live state** + pipeline shimmer | same live stream over the `StepObserver` channel |
 | Esc to stop | **Stop control** (`⌫` hint / button) | the engine's cooperative cancel (stops at the next boundary) |
