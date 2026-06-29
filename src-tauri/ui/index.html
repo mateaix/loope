@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loope</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div id="backdrop">
+      <div class="blob b1"></div>
+      <div class="blob b2"></div>
+      <div class="blob b3"></div>
+      <div class="blob b4"></div>
+    </div>
+
+    <div id="app">
+      <header class="titlebar">
+        <div class="tb-brand">∞&nbsp;<b>loope</b></div>
+        <div class="tb-ctx" id="ctx"></div>
+        <div class="agents" id="agents"></div>
+      </header>
+
+      <div class="body">
+        <aside class="sidebar" id="sidebar"></aside>
+        <main class="panel">
+          <div class="pipe" id="pipe"></div>
+          <div class="stream" id="stream">
+            <div class="empty" id="empty">Select a run, or describe a change below to start one.</div>
+          </div>
+        </main>
+      </div>
+
+      <div class="cmd">
+        <span class="cpill">
+          <span class="cprompt">›</span>
+          <input id="prompt" type="text" placeholder="describe the next change…  (or type to search)" />
+        </span>
+        <span class="cflex"></span>
+        <span class="chint" id="hint">⏎ run&nbsp;·&nbsp;⇧⏎ search</span>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

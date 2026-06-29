@@ -326,6 +326,7 @@ rationale.
 - [TUI Plan](docs/plans/2026-06-29-loope-tui-plan.md)
 - [TUI Slash Commands Plan](docs/plans/2026-06-29-loope-tui-commands-plan.md)
 - [Convergence Highlight Plan](docs/plans/2026-06-29-loope-convergence-highlight-plan.md)
+- [Desktop Hub Plan](docs/plans/2026-06-29-loope-desktop-hub-plan.md)
 
 ## License
 

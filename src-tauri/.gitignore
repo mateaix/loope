@@ -1,0 +1,5 @@
+# Build output and generated files for the desktop crate.
+/target
+/gen
+# The lockfile is generated on first build (the core crate's lockfile is separate).
+Cargo.lock

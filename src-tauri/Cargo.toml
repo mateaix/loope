@@ -1,0 +1,23 @@
+[package]
+name = "loope-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Loope Desktop — a Liquid Glass hub for the loop."
+publish = false
+
+# Standalone crate: deliberately NOT part of the loope core workspace (which excludes this
+# path), so it carries its own dependency tree and is built/packaged separately.
+[workspace]
+
+[lib]
+name = "loope_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+loope = { path = ".." }

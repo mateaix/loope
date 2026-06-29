@@ -23,6 +23,8 @@ tui = ["dep:ratatui"]
 ratatui = { version = "0.30", optional = true }
 
 # This package is also the workspace root. The std-only `loope` crate stays the sole
-# member for now; the desktop application joins as `apps/desktop` (its own dependency
-# tree) without touching this crate's dependencies.
+# member; the desktop application under `src-tauri/` is an independent, EXCLUDED crate with
+# its own dependency tree (Tauri + a path dep on this crate), so it is built and packaged
+# separately and never touches this crate's std-only dependency set or offline builds.
 [workspace]
+exclude = ["src-tauri"]

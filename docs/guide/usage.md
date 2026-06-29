@@ -419,6 +419,18 @@ Both TUI commands require an interactive terminal. On a build **without** the `t
 feature they print a hint and exit `2`; `loope run` without `--tui` is unchanged (the
 streaming print feed).
 
+## Loope Desktop (graphical app)
+
+Loope also has a graphical desktop app in the **Liquid Glass** style — a multi-agent hub
+that presents the loop's plan and the agents' execution content visually. It lives in
+[`src-tauri/`](../../src-tauri/) as a **separate, independently packaged** Tauri app: it has
+its own dependency tree and is excluded from the `loope` workspace, so the std-only core
+keeps `deps = 1` and the TUI and desktop app are built/deployed separately. Its backend is a
+thin layer over the same `loope::hub` core the CLI uses. Build and run instructions are in
+[`src-tauri/README.md`](../../src-tauri/README.md); the design is specified in
+[the desktop hub spec](../specs/2026-06-29-loope-desktop-hub-spec.md) and
+[the Liquid Glass design spec](../specs/2026-06-29-loope-liquid-glass-design-spec.md).
+
 ## Convergence highlight
 
 When a reviewer catches a real blocker that a later iteration fixes — the loop's whole
