@@ -94,13 +94,21 @@ benchmarks/hermetic.sh        # asserts determinism + gating; reports harness la
 **Delivery tier** (real agents — gated on installed, authenticated CLIs):
 
 ```bash
-# for each case: run loope with a real preset, parse run.json/events.jsonl into metrics,
-# and append a row to benchmarks/results/<date>-<preset>.json
-benchmarks/deliver.sh --preset claude-codex --samples 3   # (planned runner)
+# run each case with a real preset; re-run its verify_cmd as an independent oracle; parse
+# run.json/events.jsonl into metrics; write benchmarks/results/<date>-<preset>.json
+benchmarks/deliver.sh --preset claude-codex --samples 3
+
+# the ablation baseline (one pass, no repair loop):
+benchmarks/deliver.sh --preset claude-codex --single-shot --samples 3
+
+# exercise the whole pipeline hermetically (stub agents, no CLIs needed):
+benchmarks/deliver.sh --dry-run --samples 2
 ```
 
-Results snapshots are committed under `benchmarks/results/` as dated JSON so trends are
-visible over time.
+`deliver.sh` drives the run, `_metrics.py` parses and aggregates. Resolution is decided by
+**re-running the case's `verify_cmd` on the final workspace** (an independent oracle, not the
+harness's own verdict). Results snapshots are committed under `benchmarks/results/` as dated
+JSON so trends are visible over time.
 
 ---
 
@@ -123,10 +131,14 @@ agents, so the numbers are pure harness):
 convergence gating and full per-step evidence — the preconditions for trustworthy delivery
 measurement.
 
-### Delivery tier — pending
+### Delivery tier — runner validated, results pending
 
-Requires authenticated agent CLIs and is run outside CI. The metrics and the ablation above
-are defined and ready; results snapshots will be published under `benchmarks/results/`. The
+The runner (`deliver.sh` + `_metrics.py`) is built and validated end-to-end via `--dry-run`:
+on the `checked-multiply` trap the stub agent cannot fix the overflow, and the pipeline
+reports it honestly — `resolve_rate=0`, `stop_reason=max_iters`, `catch_and_fix_rate=0`, no
+false success. Real numbers require authenticated agent CLIs and are run outside CI; the
+metrics and the ablation above are defined and ready, and snapshots publish under
+`benchmarks/results/`. The
 single number that will make or break Loope's thesis is the **catch-and-fix rate**: if the
 review loop rarely catches a real defect, the loop is not worth its tokens; if it catches
 often, the loop is the product. The harness already records exactly that signal per run.

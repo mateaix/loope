@@ -1,0 +1,40 @@
+{
+  "preset": "claude-codex",
+  "max_iters": 3,
+  "date": "2026-06-29",
+  "mode": "dry-run",
+  "samples": 2,
+  "resolve_rate": 0.0,
+  "convergence_rate": 0.0,
+  "catch_and_fix_rate": 0.0,
+  "median_iterations": 3.0,
+  "median_iterations_resolved": 0,
+  "total_tokens": 0,
+  "tokens_per_resolved": null,
+  "wasted_token_ratio": 0,
+  "median_wall_ms": 1444.0,
+  "records": [
+    {
+      "case": "checked-multiply",
+      "resolved": false,
+      "converged": false,
+      "iterations": 3,
+      "stop_reason": "max_iters",
+      "catch_and_fix": false,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "wall_ms": 1605
+    },
+    {
+      "case": "checked-multiply",
+      "resolved": false,
+      "converged": false,
+      "iterations": 3,
+      "stop_reason": "max_iters",
+      "catch_and_fix": false,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "wall_ms": 1283
+    }
+  ]
+}
