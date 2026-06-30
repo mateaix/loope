@@ -304,11 +304,48 @@ exercise the real agents manually:
 [`benchmarks/`](benchmarks/) measures whether the convergent review loop delivers more
 reliable software than a single shot — separating the **harness** (Loope's orchestration)
 from the **model** (the agent). A hermetic tier (`benchmarks/hermetic.sh`, `--dry-run`, no
-network) checks determinism, convergence gating, and harness overhead; a delivery tier runs
-real agents on SWE-bench-style cases and reports resolve rate, the **catch-and-fix rate**
-(Loope's signature metric), and token economy. Measured hermetic results: byte-identical
-runs (deterministic), **~21 ms** harness overhead per loop (model excluded), and honest
-gating (no false "converged"). See [`benchmarks/README.md`](benchmarks/README.md).
+network) measures the harness; a delivery tier runs real agents on SWE-bench-style cases and,
+for SWE-bench, evaluates the result in the **official Dockerized harness** (the gold-test
+oracle).
+
+### Results
+
+<img src="assets/benchmark-results.svg" alt="loope SWE-bench Lite resolve rate" width="640">
+
+**Tier summary** (all measured locally; SWE-bench verdicts from the official `swebench`
+Docker harness):
+
+| Tier | What | Result |
+| --- | --- | --- |
+| **Harness** (hermetic) | determinism · overhead · gating · artifacts | **4/4** checks pass · `run.json` byte-identical · **~21 ms**/loop overhead (model excluded) · no false "converged" |
+| **Micro traps** (real agents) | 4 trap tasks, loop vs single-shot | both **4/4** resolved (too easy to separate), but the loop converged cleaner: convergence 75 %→**100 %**, wasted-token ratio 30 %→**0 %**, tokens/resolved 96 k→**88 k** |
+| **SWE-bench Lite** (official Docker) | real GitHub issues, gold-test oracle | **3/5 resolved (60 %)** — see below |
+
+**SWE-bench Lite — officially Docker-verified** (`claude→codex` loop, `n = 5`):
+
+| instance | repo | single-shot | **loop** |
+| --- | --- | --- | --- |
+| `flask-4045` | flask | ❌ | ✅ **resolved** (verify→repair caught & fixed an incomplete first patch) |
+| `flask-5063` | flask | — | ✅ resolved |
+| `pylint-5859` | pylint | — | ✅ resolved |
+| `flask-4992` | flask | — | ❌ unresolved |
+| `pytest-7490` | pytest | — | ❌ unresolved |
+
+```text
+resolve rate   ███████████████░░░░░░░░░░   3 / 5   60%
+ flask         ████████████████░░░░░░░░░   2 / 3
+ pylint        █████████████████████████   1 / 1
+ pytest        ░░░░░░░░░░░░░░░░░░░░░░░░░░   0 / 1
+```
+
+The headline finding is **`flask-4045`**: a single shot produced a plausible-but-incomplete
+fix that the reviewer passed but the tests rejected; the loop's **verify→repair** cycle fed
+that failure back and the next iteration resolved it — confirmed by the official harness.
+`n = 5` is a small sample (wide confidence interval), not a published rate; loope produced
+patches for **14** real issues in this run, of which 5 were Docker-evaluated here (the rest
+were blocked by a flaky network to GitHub during image builds). Full methodology, the
+loop/single-shot ablation, the resumable batch + official-eval harness, and all result
+snapshots are in [`benchmarks/`](benchmarks/).
 
 ## Architecture
 

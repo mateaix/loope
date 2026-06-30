@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 312" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" role="img" aria-label="loope SWE-bench Lite resolve rate chart">
+  <title>loope on SWE-bench Lite — officially Docker-verified resolve rate</title>
+  <text x="20" y="30" font-size="17" font-weight="700" fill="#4a8fe7">loope on SWE-bench Lite — officially Docker-verified resolve rate</text>
+  <text x="20" y="50" font-size="12.5" fill="#7d8590">claude→codex loop · gold-test oracle in the official swebench Docker harness · n = 5 (small sample)</text>
+
+  <!-- gridlines at 0/25/50/75/100% -->
+  <g stroke="#88888830" stroke-width="1">
+    <line x1="200" y1="70" x2="200" y2="276"/>
+    <line x1="325" y1="70" x2="325" y2="276"/>
+    <line x1="450" y1="70" x2="450" y2="276"/>
+    <line x1="575" y1="70" x2="575" y2="276"/>
+    <line x1="700" y1="70" x2="700" y2="276"/>
+  </g>
+  <g font-size="10.5" fill="#7d8590" text-anchor="middle">
+    <text x="200" y="292">0%</text><text x="325" y="292">25%</text>
+    <text x="450" y="292">50%</text><text x="575" y="292">75%</text><text x="700" y="292">100%</text>
+  </g>
+
+  <!-- bars: track + value. width 500px = 100% (x 200..700) -->
+  <g font-size="13" fill="#c9d1d9">
+    <!-- overall 60% -->
+    <text x="190" y="93" text-anchor="end" fill="#adbac7" font-weight="600">overall</text>
+    <rect x="200" y="80" width="500" height="22" rx="4" fill="#88888828"/>
+    <rect x="200" y="80" width="300" height="22" rx="4" fill="#3fb950"/>
+    <text x="510" y="96" font-size="12.5" fill="#adbac7" font-weight="700">3 / 5  ·  60%</text>
+
+    <!-- flask 2/3 -->
+    <text x="190" y="133" text-anchor="end" fill="#adbac7">flask</text>
+    <rect x="200" y="120" width="500" height="22" rx="4" fill="#88888828"/>
+    <rect x="200" y="120" width="333" height="22" rx="4" fill="#3fb950"/>
+    <text x="543" y="136" font-size="12" fill="#7d8590">2 / 3</text>
+
+    <!-- pylint 1/1 -->
+    <text x="190" y="173" text-anchor="end" fill="#adbac7">pylint</text>
+    <rect x="200" y="160" width="500" height="22" rx="4" fill="#88888828"/>
+    <rect x="200" y="160" width="500" height="22" rx="4" fill="#3fb950"/>
+    <text x="710" y="176" font-size="12" fill="#7d8590">1 / 1</text>
+
+    <!-- pytest 0/1 -->
+    <text x="190" y="213" text-anchor="end" fill="#adbac7">pytest</text>
+    <rect x="200" y="200" width="500" height="22" rx="4" fill="#88888828"/>
+    <rect x="200" y="200" width="6" height="22" rx="3" fill="#f85149"/>
+    <text x="214" y="216" font-size="12" fill="#7d8590">0 / 1</text>
+  </g>
+
+  <text x="20" y="250" font-size="12" fill="#7d8590">★ flask-4045: single-shot failed → the review loop's verify→repair cycle resolved it (officially confirmed).</text>
+  <text x="20" y="268" font-size="11.5" fill="#6e7681">loope produced patches for 14 real issues in this run; 5 were Docker-evaluated here (the rest were network-blocked).</text>
+</svg>
