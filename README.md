@@ -393,6 +393,7 @@ rationale.
 - [Liquid Glass Design Spec](docs/specs/2026-06-29-loope-liquid-glass-design-spec.md)
 - [Loop Optimization Spec](docs/specs/2026-06-30-loope-loop-optimization-spec.md)
 - [Rich Execution Rendering Spec](docs/specs/2026-06-30-loope-rich-rendering-spec.md)
+- [Result Landing Spec](docs/specs/2026-07-01-loope-result-landing-spec.md)
 - [Product Prototype](docs/prototype/2026-06-28-loope-product-prototype.md)
 - [MVP Plan](docs/plans/2026-06-28-loope-mvp-plan.md)
 - [Agent Integration Plan](docs/plans/2026-06-28-loope-agent-integration-plan.md)
@@ -404,6 +405,7 @@ rationale.
 - [Desktop Hub Plan](docs/plans/2026-06-29-loope-desktop-hub-plan.md)
 - [Loop Optimization Plan](docs/plans/2026-06-30-loope-loop-optimization-plan.md)
 - [Rich Execution Rendering Plan](docs/plans/2026-06-30-loope-rich-rendering-plan.md)
+- [Result Landing Plan](docs/plans/2026-07-01-loope-result-landing-plan.md)
 
 ## License
 
