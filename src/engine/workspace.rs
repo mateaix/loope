@@ -48,6 +48,13 @@ impl RunWorkspace {
         requirement: &str,
     ) -> io::Result<Self> {
         fs::create_dir_all(base)?;
+        // Keep loope's artifacts out of version control (the run dir, and any copied or
+        // worktree workspace) so they never show up as unversioned files in the user's repo.
+        if let Some(loope_dir) = base.parent()
+            && crate::engine::git::is_repo(source)
+        {
+            let _ = crate::engine::git::ensure_loope_ignored(loope_dir);
+        }
         let run_id = next_run_id(base, requirement)?;
         let root = base.join(&run_id);
         fs::create_dir_all(&root)?;

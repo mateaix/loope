@@ -5,6 +5,7 @@
 //! - [`review`] interprets reviewer verdicts for the convergence gate.
 
 pub mod executor;
+pub mod git;
 pub mod highlight;
 pub mod review;
 pub mod workspace;
