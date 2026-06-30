@@ -3,7 +3,7 @@
 
 use loope::engine::Highlight;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -134,8 +134,88 @@ fn step_line(step: &StepView) -> Line<'static> {
             Style::new().fg(style::DIM),
         ));
     }
+    if let Some((label, color)) = block_hint(step) {
+        spans.push(Span::styled("  · ", Style::new().fg(style::DIM)));
+        spans.push(Span::styled(label, Style::new().fg(color).add_modifier(Modifier::BOLD)));
+    }
     for change in &step.changes {
         spans.push(Span::styled(format!("  {change}"), Style::new().fg(style::DIM)));
     }
     Line::from(spans)
+}
+
+/// A `BLOCK · N blocker(s)` chip for a reviewer step whose verdict blocks — so the row shows
+/// at a glance that there's something to fix, without opening the result pane.
+fn block_hint(step: &StepView) -> Option<(String, Color)> {
+    let verdict = step.verdict.as_deref()?;
+    // Blocking verdicts read "BLOCK …" / "blocked …"; "approve (no blockers)" must not match.
+    if !verdict.trim().to_ascii_lowercase().starts_with("block") {
+        return None;
+    }
+    let label = match count_blockers(&step.message) {
+        0 => "BLOCK".to_string(),
+        1 => "BLOCK · 1 blocker".to_string(),
+        n => format!("BLOCK · {n} blockers"),
+    };
+    Some((label, style::FAIL))
+}
+
+/// Count the numbered findings in a review message's "Blocking Findings" section (stopping at
+/// the next `**…**` header, e.g. SUGGEST).
+fn count_blockers(message: &str) -> usize {
+    let Some(start) = message.find("Blocking Findings") else {
+        return 0;
+    };
+    let mut count = 0;
+    for line in message[start..].lines().skip(1) {
+        let t = line.trim_start();
+        if count > 0 && t.starts_with("**") {
+            break;
+        }
+        if let Some((num, _)) = t.split_once(". ")
+            && !num.is_empty()
+            && num.chars().all(|c| c.is_ascii_digit())
+        {
+            count += 1;
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reviewer(verdict: Option<&str>, message: &str) -> StepView {
+        StepView {
+            num: 2,
+            role: "reviewer".to_string(),
+            adapter: "Codex".to_string(),
+            verdict: verdict.map(str::to_string),
+            message: message.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn block_hint_counts_findings() {
+        let msg = "**Blocking Findings**\n\n1. missing dialog permission\n   continues here\n2. another issue\n\n**SUGGEST:** tidy up\n3. not counted (after section)";
+        let (label, _) = block_hint(&reviewer(Some("BLOCK (blockers found)"), msg)).unwrap();
+        assert_eq!(label, "BLOCK · 2 blockers");
+    }
+
+    #[test]
+    fn block_hint_singular_and_unknown_count() {
+        let one = block_hint(&reviewer(Some("blocked (needs work)"), "**Blocking Findings**\n\n1. fix it")).unwrap();
+        assert_eq!(one.0, "BLOCK · 1 blocker");
+        // Verdict blocks but no parseable findings → bare BLOCK.
+        let bare = block_hint(&reviewer(Some("BLOCK"), "see above")).unwrap();
+        assert_eq!(bare.0, "BLOCK");
+    }
+
+    #[test]
+    fn no_hint_when_not_blocking() {
+        assert!(block_hint(&reviewer(Some("approve (no blockers)"), "all good")).is_none());
+        assert!(block_hint(&reviewer(None, "change produced")).is_none());
+    }
 }
