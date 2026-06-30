@@ -78,7 +78,15 @@ def run_instance(inst, root, timeout):
     iid = inst["instance_id"]
     work = os.path.join(root, iid)
     sh(["rm", "-rf", work])
-    sh(["git", "clone", "--quiet", "https://github.com/%s" % inst["repo"], work])
+    # Retry the clone — transient network/TLS blips otherwise leave no work dir and bank an
+    # empty patch.
+    for _ in range(3):
+        sh(["git", "clone", "--quiet", "https://github.com/%s" % inst["repo"], work])
+        if os.path.isdir(os.path.join(work, ".git")):
+            break
+        sh(["rm", "-rf", work])
+    if not os.path.isdir(os.path.join(work, ".git")):
+        raise RuntimeError("clone failed after retries: %s" % inst["repo"])
     sh(["git", "-C", work, "checkout", "--quiet", inst["base_commit"]])
     tp = os.path.join(root, iid + ".test.diff")
     open(tp, "w").write(inst["test_patch"] + ("" if inst["test_patch"].endswith("\n") else "\n"))
