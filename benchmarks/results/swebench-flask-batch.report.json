@@ -1,0 +1,17 @@
+{
+  "total_instances": 300,
+  "submitted_instances": 3,
+  "completed_instances": 3,
+  "resolved_instances": 2,
+  "unresolved_instances": 1,
+  "error_instances": 0,
+  "resolved_ids": [
+    "pallets__flask-4045",
+    "pallets__flask-5063"
+  ],
+  "unresolved_ids": [
+    "pallets__flask-4992"
+  ],
+  "error_ids": [],
+  "schema_version": 2
+}
