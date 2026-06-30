@@ -37,6 +37,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Convergence highlight (the "caught & fixed" card — reviewer blocks, next iteration fixes)
 - Desktop hub (a graphical app: multi-agent management + visual execution rendering) — *spec-first, not yet built*
 - Loop optimization (verify-first review, stall-stop, structured repair feedback) — *spec-first, from benchmark evidence*
+- Rich execution rendering (deeper Claude/Codex stream parsing: reasoning, output, plans) — *spec-first*
 - Liquid Glass design (the desktop visual language + TUI→GUI surface mapping) — *design spec*
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
