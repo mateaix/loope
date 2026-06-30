@@ -56,9 +56,10 @@ seed s; ( cd s && loope run --dry-run --quiet --verify-cmd "cargo test" "add a m
 # --- failure gating (no false convergence) ---
 echo "[gating: failure]"
 seed f; ( cd f && loope run --dry-run --quiet --verify-cmd "false" --max-iters 3 "add a multiply function" >/dev/null 2>&1 )
-[ "$(field "$(rjson f)" converged)" = "false" ] && [ "$(field "$(rjson f)" stop_reason)" = "max_iters" ] \
-  && ok "does not false-converge: stops at max_iters when verify keeps failing" \
-  || no "expected converged=false stop_reason=max_iters"
+sr="$(field "$(rjson f)" stop_reason)"
+{ [ "$(field "$(rjson f)" converged)" = "false" ] && { [ "$sr" = "max_iters" ] || [ "$sr" = "stalled" ]; }; } \
+  && ok "does not false-converge (stop_reason=$sr) when verify keeps failing" \
+  || no "expected converged=false + max_iters/stalled, got '$sr'"
 
 # --- artifact fidelity ---
 echo "[artifacts]"

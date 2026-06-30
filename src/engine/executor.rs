@@ -29,6 +29,9 @@ pub enum StopReason {
     DesignOnly,
     /// The user asked to stop (the loop halted at a step boundary).
     Cancelled,
+    /// An iteration made no progress (no change, or the same failure as before); stopped
+    /// early instead of burning the remaining iteration budget.
+    Stalled,
 }
 
 impl StopReason {
@@ -40,6 +43,7 @@ impl StopReason {
             StopReason::StepFailed => "halted: a step failed",
             StopReason::DesignOnly => "design contract produced",
             StopReason::Cancelled => "stopped by user",
+            StopReason::Stalled => "stopped: no progress",
         }
     }
 
@@ -50,6 +54,7 @@ impl StopReason {
             StopReason::StepFailed => "step_failed",
             StopReason::DesignOnly => "design_only",
             StopReason::Cancelled => "cancelled",
+            StopReason::Stalled => "stalled",
         }
     }
 }
@@ -304,6 +309,8 @@ pub fn execute_loop(
     // --- Iterations ---
     let max = config.max_iters.max(1);
     let mut feedback: Option<String> = None;
+    // The prior iteration's failure signature, to detect no-progress stalls.
+    let mut prev_failure_sig: Option<String> = None;
 
     'iterations: for iter in 1..=max {
         iterations = iter;
@@ -425,10 +432,21 @@ pub fn execute_loop(
             stop_reason = StopReason::Converged;
             break 'iterations;
         }
+        // Stall: this iteration made no progress — the implementer changed nothing, or the
+        // verify failure is the same as last time. Stop early rather than burn the budget.
+        let failure_sig = verify_failure.as_deref().map(|f| {
+            summarize_failures(f).unwrap_or_else(|| tail_lines(f, FEEDBACK_MAX_LINES, FEEDBACK_MAX_BYTES))
+        });
+        let same_failure = failure_sig.is_some() && failure_sig == prev_failure_sig;
+        if !changed || same_failure {
+            stop_reason = StopReason::Stalled;
+            break 'iterations;
+        }
         if iter >= max {
             stop_reason = StopReason::MaxIters;
             break 'iterations;
         }
+        prev_failure_sig = failure_sig;
         feedback = Some(compose_feedback(&blocker_messages, verify_failure.as_deref()));
     }
 
@@ -1045,8 +1063,45 @@ mod tests {
     }
 
     #[test]
-    fn stops_at_max_iters_without_converging() {
-        let (run, _ws) = run(&config(2, None), &AlwaysBlock);
+    fn stalls_when_no_progress_is_made() {
+        // The reviewer always blocks and the stub implementer repeats the same change, so the
+        // second iteration produces no new change → stop early as Stalled, not MaxIters.
+        let (run, _ws) = run(&config(3, None), &AlwaysBlock);
+        assert_eq!(run.stop_reason, StopReason::Stalled);
+        assert!(run.iterations < 3);
+        assert!(!run.all_passed());
+    }
+
+    /// Reviewer always blocks; the implementer makes a *new* change each iteration, so the
+    /// loop genuinely progresses without converging and reaches the iteration cap.
+    struct ProgressingBlock {
+        n: std::sync::atomic::AtomicUsize,
+    }
+    impl Invoker for ProgressingBlock {
+        fn invoke(&self, inv: &AgentInvocation) -> InvocationResult {
+            if inv.role == Role::Reviewer {
+                return InvocationResult {
+                    success: true,
+                    message: "not yet\nVERDICT: BLOCK".to_string(),
+                    changed_files: Vec::new(),
+                    transcript: String::new(),
+                };
+            }
+            let n = self.n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let _ = std::fs::write(inv.workspace_dir.join(format!("progress-{n}.txt")), n.to_string());
+            InvocationResult {
+                success: true,
+                message: "made a change".to_string(),
+                changed_files: vec![format!("progress-{n}.txt")],
+                transcript: String::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn reaches_max_iters_when_each_iteration_progresses() {
+        let invoker = ProgressingBlock { n: std::sync::atomic::AtomicUsize::new(0) };
+        let (run, _ws) = run(&config(2, None), &invoker);
         assert_eq!(run.stop_reason, StopReason::MaxIters);
         assert_eq!(run.iterations, 2);
         assert!(!run.all_passed());
@@ -1133,9 +1188,10 @@ mod tests {
         assert_eq!(pass.stop_reason, StopReason::Converged);
         assert_eq!(pass.iterations, 1);
 
-        let (fail, _) = run(&config(2, Some("exit 1")), &StubInvoker);
-        assert_eq!(fail.stop_reason, StopReason::MaxIters);
-        assert_eq!(fail.iterations, 2);
+        // A verify that always fails the same way with no new change → stalls (no progress),
+        // rather than pointlessly running to the iteration cap.
+        let (fail, _) = run(&config(3, Some("exit 1")), &StubInvoker);
+        assert_eq!(fail.stop_reason, StopReason::Stalled);
         assert!(!fail.all_passed());
     }
 
