@@ -49,6 +49,9 @@ pub struct RunWorkspace {
     pub mode: WorkspaceMode,
     /// For a worktree run: the source `HEAD` short-sha the branch was cut from.
     pub base: Option<String>,
+    /// Whether to commit the result on the worktree branch at finalize (`--no-commit` clears
+    /// it). Ignored outside worktree mode.
+    pub commit: bool,
 }
 
 impl RunWorkspace {
@@ -134,6 +137,7 @@ impl RunWorkspace {
             workspace_dir,
             mode: resolved,
             base: base_sha,
+            commit: true,
         })
     }
 

@@ -146,6 +146,20 @@ impl LoopRun {
             .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed))
     }
 
+    /// Copy-pasteable guidance on where the results are and how to take them, tailored to how
+    /// the run materialized its workspace. `None` when there's nothing to land (an in-place
+    /// run, or a run that changed no files).
+    pub fn landing_summary(&self, workspace_dir: &std::path::Path, in_place: bool) -> Option<String> {
+        landing_guidance(
+            &self.run_id,
+            self.branch.as_deref(),
+            self.base.as_deref(),
+            workspace_dir,
+            in_place,
+            !self.changed.is_empty(),
+        )
+    }
+
     /// Human-readable final loop report.
     pub fn to_report_markdown(&self) -> String {
         let mut out = String::new();
@@ -510,6 +524,33 @@ fn step_outcome(
 
 /// Write the report + run record (plus the cumulative diff and changed-file listing)
 /// and return the [`LoopRun`].
+/// Build the end-of-run landing guidance from a run's primitives. Reused by the live run and
+/// by `loope show` (which reconstructs the inputs from `run.json`). `None` when there's
+/// nothing to take (in-place, or no changes on a copy run).
+pub fn landing_guidance(
+    run_id: &str,
+    branch: Option<&str>,
+    base: Option<&str>,
+    workspace_dir: &std::path::Path,
+    in_place: bool,
+    has_changes: bool,
+) -> Option<String> {
+    if let Some(branch) = branch {
+        let base = base.unwrap_or("HEAD");
+        let ws = workspace_dir.display();
+        return Some(format!(
+            "results on branch {branch}\n  \
+             review   git diff {base}..{branch}\n  \
+             merge    git merge {branch}\n  \
+             discard  git worktree remove {ws} && git branch -D {branch}"
+        ));
+    }
+    if in_place || !has_changes {
+        return None;
+    }
+    Some(format!("land the changes into your tree with: loope apply {run_id}"))
+}
+
 fn finalize(
     workspace: &RunWorkspace,
     requirement: &str,
@@ -550,7 +591,7 @@ fn finalize(
     // Land the result on the worktree branch (best-effort — a run never fails on a commit
     // hiccup; review-only runs with no edits simply make no commit).
     let branch = workspace.branch().map(str::to_string);
-    if branch.is_some() {
+    if branch.is_some() && workspace.commit {
         let subject = requirement.lines().next().unwrap_or(requirement);
         let subject: String = subject.chars().take(72).collect();
         let msg = format!("loope: {} ({})", subject.trim(), workspace.run_id);
@@ -969,6 +1010,23 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
+
+    #[test]
+    fn landing_guidance_per_mode() {
+        let ws = std::path::Path::new("/r/.loope/runs/0001-x/workspace");
+        // Worktree: review/merge/discard commands with the recorded base.
+        let s = landing_guidance("0001-x", Some("loope/0001-x"), Some("abc123"), ws, false, true).unwrap();
+        assert!(s.contains("git diff abc123..loope/0001-x"));
+        assert!(s.contains("git merge loope/0001-x"));
+        assert!(s.contains("git worktree remove"));
+        // Worktree with no recorded base → HEAD fallback.
+        assert!(landing_guidance("0001-x", Some("b"), None, ws, false, false).unwrap().contains("git diff HEAD..b"));
+        // Copy run with changes → apply hint.
+        assert!(landing_guidance("0001-x", None, None, ws, false, true).unwrap().contains("loope apply 0001-x"));
+        // Nothing to land: in-place, or a copy run that changed nothing.
+        assert!(landing_guidance("0001-x", None, None, ws, true, true).is_none());
+        assert!(landing_guidance("0001-x", None, None, ws, false, false).is_none());
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn temp_base(tag: &str) -> PathBuf {

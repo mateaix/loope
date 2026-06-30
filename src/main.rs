@@ -8,7 +8,7 @@ mod cli;
 
 use cli::{theme, ui};
 use loope::adapter::{StubInvoker, SubprocessInvoker};
-use loope::engine::workspace::RunWorkspace;
+use loope::engine::workspace::{RunWorkspace, WorkspaceMode};
 use loope::engine::{LoopConfig, StepObserver, execute_loop};
 use loope::{
     Adapter, LoopOptions, Role, adapter::Invoker, generate_plan, list_adapters,
@@ -215,6 +215,9 @@ fn cmd_run(args: &mut Vec<String>) {
     let show_diff = remove_flag(args, "--show-diff");
     let no_highlight = remove_flag(args, "--no-highlight");
     let tui = remove_flag(args, "--tui");
+    let force_copy = remove_flag(args, "--copy");
+    let branch_override = remove_value(args, "--branch");
+    let no_commit = remove_flag(args, "--no-commit");
     let preset = remove_value(args, "--preset");
     let implementer = remove_adapter(args, "--implementer");
     let reviewer = remove_adapter(args, "--reviewer");
@@ -303,14 +306,26 @@ fn cmd_run(args: &mut Vec<String>) {
         ui::pipeline(&loop_steps, config.max_iters > 1, true);
     }
 
+    // Resolve how the workspace materializes: --in-place edits the tree; --copy forces a
+    // copy; otherwise a git repo runs on a worktree branch and anything else is a copy.
+    let mode = if in_place {
+        WorkspaceMode::InPlace
+    } else if force_copy {
+        WorkspaceMode::Copy
+    } else if loope::engine::git::is_repo(&source) {
+        WorkspaceMode::Worktree { branch: branch_override.clone() }
+    } else {
+        WorkspaceMode::Copy
+    };
     warn_dirty_worktree(&source, in_place);
-    let workspace = match RunWorkspace::create(&base, &source, in_place, &requirement) {
+    let mut workspace = match RunWorkspace::create_with_mode(&base, &source, mode, &requirement) {
         Ok(ws) => ws,
         Err(err) => {
             eprintln!("failed to create run workspace: {err}");
             process::exit(1);
         }
     };
+    workspace.commit = !no_commit;
     let _ = fs::write(workspace.root.join("plan.md"), plan.to_markdown());
 
     let invoker: Box<dyn Invoker + Send + Sync> = if dry_run {
@@ -376,6 +391,10 @@ fn cmd_run(args: &mut Vec<String>) {
             println!("\n# Changes\n");
             ui::print_diff(&diffs, color);
         }
+    }
+
+    if let Some(summary) = run.landing_summary(&workspace.workspace_dir, workspace.in_place()) {
+        ui::print_landing(&summary, color);
     }
 
     if !run.all_passed() {
@@ -461,6 +480,33 @@ fn cmd_show(args: &mut Vec<String>) {
             ui::print_diff(&diffs, color);
         }
     }
+
+    // Landing guidance, reconstructed from run.json (branch/base) + changed-files.txt.
+    if let Ok(json) = fs::read_to_string(run_dir.join("run.json")) {
+        let branch = json_opt_str(&json, "branch");
+        let base = json_opt_str(&json, "base");
+        let has_changes = fs::read_to_string(run_dir.join("changed-files.txt"))
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if let Some(summary) = loope::engine::executor::landing_guidance(
+            &run_id,
+            branch.as_deref(),
+            base.as_deref(),
+            &run_dir.join("workspace"),
+            false,
+            has_changes,
+        ) {
+            ui::print_landing(&summary, color);
+        }
+    }
+}
+
+/// Extract a `"key":"value"` string from compact JSON, returning `None` for `"key":null`.
+fn json_opt_str(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = json.find(&needle)? + needle.len();
+    let end = json[start..].find('"')? + start;
+    Some(json[start..end].to_string())
 }
 
 /// Copy a run's changed/added files from its workspace back into the working directory.
@@ -829,6 +875,9 @@ run flags:
   --show-diff     After the run, print the cumulative diff of everything that changed.
   --tui           Watch the run in a full-screen dashboard (build with --features tui).
   --in-place      Operate on the working directory directly instead of a copied tree.
+  --copy          Force a copied workspace instead of a git worktree branch.
+  --branch NAME   Name the result branch (default loope/<run-id>; git repos only).
+  --no-commit     Leave the worktree's changes uncommitted on the branch.
   --workdir DIR   Source directory to run against (default: current directory).
   --approve MODE  'auto' (default) or 'manual' (confirm before launching agents).
   --preset NAME   claude-codex | codex-claude | claude-solo | dual-review | opencode-codex.

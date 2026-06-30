@@ -530,6 +530,24 @@ impl StepObserver for LiveObserver {
 /// and tests are unchanged); in color mode it becomes a summary box plus a colored
 /// per-step recap. Used by both `run` (final output) and `show`.
 /// Print the convergence highlight — the run's "caught & fixed" hero moment.
+/// Print the end-of-run landing guidance (where the results are, how to take them).
+pub fn print_landing(summary: &str, color: bool) {
+    if !color {
+        println!("\n{summary}");
+        return;
+    }
+    let (r, g, b) = GREEN;
+    let green = fg(r, g, b);
+    println!();
+    for (i, line) in summary.lines().enumerate() {
+        if i == 0 {
+            println!("  {green}✦{RESET} {line}");
+        } else {
+            println!("  {DIM}{line}{RESET}");
+        }
+    }
+}
+
 pub fn print_highlight(h: &Highlight, color: bool) {
     let outcome = if h.converged { "converged" } else { "review passed" };
     let changes = if h.fix_changes.is_empty() {
