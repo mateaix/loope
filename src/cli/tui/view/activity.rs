@@ -3,7 +3,7 @@
 //! the live "running" pane and the browse "activity" preview.
 
 use loope::adapter::event::{ActionKind, LoopEvent};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::super::style;
@@ -24,6 +24,21 @@ pub fn activity_line(event: &LoopEvent) -> Line<'static> {
         }
         LoopEvent::Message { text } => Line::from(vec![
             Span::styled("  › ", Style::new().fg(style::BRAND)),
+            Span::styled(first_line(text, 100), Style::new().fg(style::DIM)),
+        ]),
+        LoopEvent::Reasoning { text } => Line::from(vec![
+            Span::styled("  … ", Style::new().fg(style::DIM)),
+            Span::styled(
+                first_line(text, 100),
+                Style::new().fg(style::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]),
+        LoopEvent::Output { text } => Line::from(Span::styled(
+            format!("      {}", first_line(text, 96)),
+            Style::new().fg(style::DIM),
+        )),
+        LoopEvent::Plan { text } => Line::from(vec![
+            Span::styled("  ◻ ", Style::new().fg(style::BRAND)),
             Span::styled(first_line(text, 100), Style::new().fg(style::DIM)),
         ]),
         LoopEvent::Model { name } => Line::from(Span::styled(
@@ -47,6 +62,8 @@ fn glyph(kind: ActionKind) -> (&'static str, Color) {
         ActionKind::Edit | ActionKind::Write => ("✎", style::PASS),
         ActionKind::Command => ("▸", style::BRAND),
         ActionKind::Search => ("⌕", style::DIM),
+        ActionKind::Fetch => ("↗", style::BRAND),
+        ActionKind::Task => ("⊕", style::BRAND),
         ActionKind::Other => ("·", style::DIM),
     }
 }

@@ -12,6 +12,10 @@ pub enum ActionKind {
     Write,
     Command,
     Search,
+    /// A web fetch / browse.
+    Fetch,
+    /// A spawned sub-agent / task.
+    Task,
     Other,
 }
 
@@ -24,6 +28,8 @@ impl ActionKind {
             ActionKind::Write => "write",
             ActionKind::Command => "run",
             ActionKind::Search => "search",
+            ActionKind::Fetch => "fetch",
+            ActionKind::Task => "task",
             ActionKind::Other => "do",
         }
     }
@@ -36,6 +42,8 @@ impl ActionKind {
             ActionKind::Write => "write",
             ActionKind::Command => "command",
             ActionKind::Search => "search",
+            ActionKind::Fetch => "fetch",
+            ActionKind::Task => "task",
             ActionKind::Other => "other",
         }
     }
@@ -48,6 +56,8 @@ impl ActionKind {
             "write" => ActionKind::Write,
             "command" => ActionKind::Command,
             "search" => ActionKind::Search,
+            "fetch" => ActionKind::Fetch,
+            "task" => ActionKind::Task,
             "other" => ActionKind::Other,
             _ => return None,
         })
@@ -63,6 +73,12 @@ pub enum LoopEvent {
     Action { kind: ActionKind, target: String },
     /// Assistant text (kept short for display; full text stays in the transcript).
     Message { text: String },
+    /// Reasoning / "thinking" the agent emitted (bounded for display).
+    Reasoning { text: String },
+    /// A tool's result or a command's output (bounded; e.g. a `cargo test` tail).
+    Output { text: String },
+    /// A plan / todo checklist the agent produced (formatted as text).
+    Plan { text: String },
     /// Token usage, when the CLI reports it.
     Usage {
         input_tokens: u64,
@@ -84,6 +100,15 @@ impl LoopEvent {
             ),
             LoopEvent::Message { text } => {
                 format!("{{\"type\":\"message\",\"text\":\"{}\"}}", esc(text))
+            }
+            LoopEvent::Reasoning { text } => {
+                format!("{{\"type\":\"reasoning\",\"text\":\"{}\"}}", esc(text))
+            }
+            LoopEvent::Output { text } => {
+                format!("{{\"type\":\"output\",\"text\":\"{}\"}}", esc(text))
+            }
+            LoopEvent::Plan { text } => {
+                format!("{{\"type\":\"plan\",\"text\":\"{}\"}}", esc(text))
             }
             LoopEvent::Usage {
                 input_tokens,
@@ -117,6 +142,15 @@ pub fn parse_event_line(line: &str) -> Option<LoopEvent> {
             target: json_str(line, "target").unwrap_or_default(),
         }),
         "message" => Some(LoopEvent::Message {
+            text: json_str(line, "text").unwrap_or_default(),
+        }),
+        "reasoning" => Some(LoopEvent::Reasoning {
+            text: json_str(line, "text").unwrap_or_default(),
+        }),
+        "output" => Some(LoopEvent::Output {
+            text: json_str(line, "text").unwrap_or_default(),
+        }),
+        "plan" => Some(LoopEvent::Plan {
             text: json_str(line, "text").unwrap_or_default(),
         }),
         "usage" => Some(LoopEvent::Usage {
@@ -189,6 +223,30 @@ mod tests {
         assert_eq!(ActionKind::Edit.label(), "edit");
         assert_eq!(ActionKind::Command.label(), "run");
         assert_eq!(ActionKind::Command.as_str(), "command");
+        // New finer kinds round-trip through their ids.
+        for k in [ActionKind::Fetch, ActionKind::Task] {
+            assert_eq!(ActionKind::parse(k.as_str()), Some(k));
+        }
+        assert_eq!(ActionKind::Fetch.label(), "fetch");
+        assert_eq!(ActionKind::Task.label(), "task");
+    }
+
+    #[test]
+    fn rich_events_round_trip() {
+        let events = vec![
+            LoopEvent::Reasoning { text: "needs a checked_mul\nplan: …".to_string() },
+            LoopEvent::Output { text: "running 3 tests\ntest x ... ok".to_string() },
+            LoopEvent::Plan { text: "- [x] read\n- [ ] fix".to_string() },
+            LoopEvent::Action { kind: ActionKind::Fetch, target: "https://x/y".to_string() },
+            LoopEvent::Action { kind: ActionKind::Task, target: "sub: audit".to_string() },
+        ];
+        let jsonl = events_to_jsonl(&events);
+        let parsed: Vec<LoopEvent> = jsonl.lines().filter_map(parse_event_line).collect();
+        assert_eq!(parsed, events);
+        assert!(jsonl.contains("\"type\":\"reasoning\""));
+        assert!(jsonl.contains("\"type\":\"output\""));
+        assert!(jsonl.contains("\"type\":\"plan\""));
+        assert!(jsonl.contains("\"kind\":\"fetch\""));
     }
 
     #[test]

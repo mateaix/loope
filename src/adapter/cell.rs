@@ -134,6 +134,14 @@ impl Cell {
                 target: target.clone(),
             },
             LoopEvent::Message { text } => Cell::Markdown { text: text.clone() },
+            LoopEvent::Reasoning { text } => Cell::Reasoning { text: text.clone() },
+            LoopEvent::Output { text } => Cell::Exec {
+                command: String::new(),
+                output: text.clone(),
+                exit_code: None,
+                state: ExecState::Done,
+            },
+            LoopEvent::Plan { text } => Cell::Markdown { text: text.clone() },
             LoopEvent::Usage {
                 input_tokens,
                 output_tokens,

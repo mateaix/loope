@@ -151,6 +151,21 @@ impl StepObserver for PrettyObserver {
             LoopEvent::Message { text } => {
                 println!("      {DIM}› {text}{RESET}");
             }
+            LoopEvent::Reasoning { text } => {
+                for line in text.lines() {
+                    println!("      {DIM}… {line}{RESET}");
+                }
+            }
+            LoopEvent::Output { text } => {
+                for line in text.lines() {
+                    println!("        {DIM}{line}{RESET}");
+                }
+            }
+            LoopEvent::Plan { text } => {
+                for line in text.lines() {
+                    println!("      {DIM}◻ {line}{RESET}");
+                }
+            }
             LoopEvent::Model { .. } | LoopEvent::Usage { .. } => {}
         }
         let _ = stdout().flush();
@@ -183,6 +198,8 @@ fn action_icon(kind: ActionKind) -> &'static str {
         ActionKind::Edit | ActionKind::Write => "✎",
         ActionKind::Command => "▸",
         ActionKind::Search => "⌕",
+        ActionKind::Fetch => "↗",
+        ActionKind::Task => "⊕",
         ActionKind::Other => "·",
     }
 }
@@ -481,6 +498,17 @@ impl StepObserver for LiveObserver {
             }
             LoopEvent::Message { text } => {
                 let _ = self.tx.send(RenderMsg::Message { text: text.clone() });
+            }
+            // T4 adds dedicated styled RenderMsg variants; for now surface them as text so the
+            // animated feed still shows reasoning / output / plan.
+            LoopEvent::Reasoning { text } => {
+                let _ = self.tx.send(RenderMsg::Message { text: format!("… {text}") });
+            }
+            LoopEvent::Output { text } => {
+                let _ = self.tx.send(RenderMsg::Message { text: text.clone() });
+            }
+            LoopEvent::Plan { text } => {
+                let _ = self.tx.send(RenderMsg::Message { text: format!("◻ {text}") });
             }
             LoopEvent::Model { .. } | LoopEvent::Usage { .. } => {}
         }
