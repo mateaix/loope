@@ -49,6 +49,18 @@ the official harness and **officially RESOLVED** (`resolved_instances: 1`). See
 [`../results/2026-06-29-swebench-flask-4045.md`](../results/2026-06-29-swebench-flask-4045.md)
 and the patch [`../results/swebench-flask-4045.patch`](../results/swebench-flask-4045.patch).
 
+## Resumable batch (`batch.py`)
+
+For a larger sample, [`batch.py`](batch.py) runs the loope loop over a random sample and
+**appends each prediction as it finishes**, so a kill loses at most the in-flight instance;
+re-run to resume. It samples from repos whose env installs cleanly enough for a local
+`verify_cmd` (so the loop's catch-and-fix actually functions — a *fair* measure of the loop):
+
+```bash
+python3 swebench/batch.py --out preds.jsonl --sample 12 --seed 7   # resumable
+swebench/eval.sh preds.jsonl loope-lite-12                          # official verdict
+```
+
 ## Caveat — environment is the source of record
 
 Faithful evaluation needs each repo's **environment** (its Python dependencies, sometimes a

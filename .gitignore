@@ -4,3 +4,6 @@
 .DS_Store
 /.claude/
 /.idea/
+
+# SWE-bench batch runtime (clones + venvs)
+/.swebatch/
