@@ -409,13 +409,9 @@ pub fn execute_loop(
             let vrun = execute_one(workspace, &vstep, &vprompt, invoker, observer, Some(cmd))?;
             verify_pass = vrun.result.success;
             if !verify_pass {
-                // Feed back the command's actual output (a bounded tail — failures land
-                // at the end), not just the exit code, so the next implementer can fix it.
-                verify_failure = Some(tail_lines(
-                    &vrun.result.transcript,
-                    FEEDBACK_MAX_LINES,
-                    FEEDBACK_MAX_BYTES,
-                ));
+                // Keep the full output; compose_feedback parses the failing checks out of it
+                // and appends a bounded tail.
+                verify_failure = Some(vrun.result.transcript.clone());
             }
             let vnotes = if verify_pass {
                 "verification passed"
@@ -530,18 +526,63 @@ fn finalize(
 /// Compose a feedback block from review blockers and a verification failure.
 fn compose_feedback(blockers: &[String], verify_failure: Option<&str>) -> String {
     let mut out = String::new();
+    // Lead with the specific failing checks (parsed from the verifier output) — the most
+    // actionable signal for the next repair attempt.
+    if let Some(failure) = verify_failure
+        && let Some(summary) = summarize_failures(failure)
+    {
+        out.push_str("These checks are failing — fix them:\n");
+        out.push_str(&summary);
+        out.push('\n');
+    }
     if !blockers.is_empty() {
-        out.push_str("The previous review raised blocking findings to address:\n");
+        out.push_str("\nThe previous review raised blocking findings to address:\n");
         for blocker in blockers {
             out.push_str(&format!("- {blocker}\n"));
         }
     }
     if let Some(failure) = verify_failure {
-        out.push_str("\nThe verify command failed. Fix the cause; its output:\n");
-        out.push_str(failure.trim());
+        out.push_str("\nVerify command output (tail):\n");
+        out.push_str(tail_lines(failure, FEEDBACK_MAX_LINES, FEEDBACK_MAX_BYTES).trim());
         out.push('\n');
     }
     out
+}
+
+/// At most this many failing checks in the structured feedback block.
+const MAX_FAILURE_ITEMS: usize = 12;
+
+/// Parse a verifier's output into a compact list of the specific failing checks, for common
+/// runners (pytest, cargo test, rustc). Returns `None` when nothing recognizable is found,
+/// so callers fall back to the raw tail.
+fn summarize_failures(output: &str) -> Option<String> {
+    let mut items: Vec<String> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for line in output.lines() {
+        let t = line.trim();
+        let pick = if let Some(rest) = t.strip_prefix("FAILED ") {
+            Some(rest.to_string()) // pytest: `FAILED tests/x.py::test_y - AssertionError: …`
+        } else if let Some(rest) = t.strip_prefix("E   ") {
+            // pytest assertion / error detail lines
+            (rest.contains("Error") || rest.contains("assert")).then(|| rest.trim().to_string())
+        } else if t.contains(" ... FAILED") {
+            Some(t.replace(" ... FAILED", "").trim().to_string()) // cargo: `test name ... FAILED`
+        } else if t.contains("panicked at") || t.starts_with("error[") || t.starts_with("error:") {
+            Some(t.to_string()) // rust panics / rustc compile errors
+        } else {
+            None
+        };
+        if let Some(p) = pick {
+            let p = p.trim().to_string();
+            if !p.is_empty() && seen.insert(p.clone()) {
+                items.push(p);
+                if items.len() >= MAX_FAILURE_ITEMS {
+                    break;
+                }
+            }
+        }
+    }
+    (!items.is_empty()).then(|| items.iter().map(|i| format!("- {i}")).collect::<Vec<_>>().join("\n"))
 }
 
 /// Upper bounds on the verify output fed back to the next iteration. Failures appear at
@@ -1028,6 +1069,44 @@ mod tests {
         assert_eq!(run.stop_reason, StopReason::StepFailed);
         assert_eq!(run.iterations, 1);
         assert!(!run.all_passed());
+    }
+
+    #[test]
+    fn summarize_failures_extracts_pytest_and_cargo_failures() {
+        let pytest = "collected 3 items\n\
+            tests/test_x.py::test_a PASSED\n\
+            tests/test_x.py::test_b FAILED\n\
+            =========== FAILURES ===========\n\
+            E   AssertionError: expected 0 got nan\n\
+            FAILED tests/test_x.py::test_b - AssertionError: expected 0 got nan\n";
+        let s = summarize_failures(pytest).unwrap();
+        assert!(s.contains("- tests/test_x.py::test_b - AssertionError: expected 0 got nan"));
+        assert!(s.contains("- AssertionError: expected 0 got nan"));
+
+        let cargo = "running 2 tests\n\
+            test add ... ok\n\
+            test saturates ... FAILED\n\
+            thread 'saturates' panicked at src/lib.rs:3:5:\n";
+        let c = summarize_failures(cargo).unwrap();
+        assert!(c.contains("- test saturates"));
+        assert!(c.contains("panicked at src/lib.rs:3:5"));
+
+        // Unrecognized output → None (callers fall back to the tail).
+        assert_eq!(summarize_failures("everything is fine\nall green"), None);
+    }
+
+    #[test]
+    fn compose_feedback_leads_with_failing_checks() {
+        let fb = compose_feedback(
+            &["Codex: missing edge case".to_string()],
+            Some("FAILED tests/x.py::test_y - ValueError: boom\nsome trailing log"),
+        );
+        let lead = fb.find("These checks are failing");
+        let tail = fb.find("Verify command output (tail):");
+        assert!(lead.is_some() && tail.is_some());
+        assert!(lead < tail, "failing-checks block must come before the tail");
+        assert!(fb.contains("- tests/x.py::test_y - ValueError: boom"));
+        assert!(fb.contains("missing edge case"));
     }
 
     #[test]
