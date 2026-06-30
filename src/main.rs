@@ -136,6 +136,7 @@ fn cmd_design(args: &mut Vec<String>) {
         ui::banner(true);
     }
 
+    warn_dirty_worktree(&source, in_place);
     let workspace = match RunWorkspace::create(&base, &source, in_place, &requirement) {
         Ok(ws) => ws,
         Err(err) => {
@@ -302,6 +303,7 @@ fn cmd_run(args: &mut Vec<String>) {
         ui::pipeline(&loop_steps, config.max_iters > 1, true);
     }
 
+    warn_dirty_worktree(&source, in_place);
     let workspace = match RunWorkspace::create(&base, &source, in_place, &requirement) {
         Ok(ws) => ws,
         Err(err) => {
@@ -620,6 +622,20 @@ fn collect_run_diffs(run_dir: &Path) -> String {
         }
     }
     out
+}
+
+/// Warn when a worktree run will branch from `HEAD` but the source tree has uncommitted
+/// work, which won't be carried into the worktree.
+fn warn_dirty_worktree(source: &Path, in_place: bool) {
+    if !in_place
+        && loope::engine::git::is_repo(source)
+        && loope::engine::git::is_dirty(source)
+    {
+        eprintln!(
+            "warning: {} has uncommitted changes — results branch from HEAD and won't include them.\n         commit or stash first, or use --in-place to edit your working tree directly.",
+            source.display()
+        );
+    }
 }
 
 fn confirm_plan(plan: &loope::LoopPlan, source: &Path, in_place: bool) -> bool {

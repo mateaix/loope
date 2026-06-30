@@ -127,6 +127,10 @@ pub struct LoopRun {
     pub highlight: Option<crate::engine::Highlight>,
     /// Total wall-clock time of the run, in milliseconds.
     pub total_ms: u64,
+    /// For a worktree run: the result branch the changes were committed on.
+    pub branch: Option<String>,
+    /// For a worktree run: the source `HEAD` short-sha the branch was cut from.
+    pub base: Option<String>,
 }
 
 impl LoopRun {
@@ -222,14 +226,21 @@ impl LoopRun {
             })
             .collect();
 
+        let json_opt = |v: &Option<String>| {
+            v.as_deref()
+                .map(|s| format!("\"{}\"", json_escape(s)))
+                .unwrap_or_else(|| "null".to_string())
+        };
         format!(
-            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"converged\":{},\"highlight\":{},\"iterations\":{},\"stop_reason\":\"{}\",\"steps\":[{}]}}\n",
+            "{{\"run_id\":\"{}\",\"requirement\":\"{}\",\"converged\":{},\"highlight\":{},\"iterations\":{},\"stop_reason\":\"{}\",\"branch\":{},\"base\":{},\"steps\":[{}]}}\n",
             json_escape(&self.run_id),
             json_escape(&self.requirement),
             self.all_passed(),
             self.highlight.is_some(),
             self.iterations,
             self.stop_reason.as_str(),
+            json_opt(&self.branch),
+            json_opt(&self.base),
             steps.join(",")
         )
     }
@@ -536,6 +547,16 @@ fn finalize(
         atomic_write(&workspace.root.join("highlight"), &highlight.to_storage())?;
     }
 
+    // Land the result on the worktree branch (best-effort — a run never fails on a commit
+    // hiccup; review-only runs with no edits simply make no commit).
+    let branch = workspace.branch().map(str::to_string);
+    if branch.is_some() {
+        let subject = requirement.lines().next().unwrap_or(requirement);
+        let subject: String = subject.chars().take(72).collect();
+        let msg = format!("loope: {} ({})", subject.trim(), workspace.run_id);
+        let _ = crate::engine::git::commit_all(&workspace.workspace_dir, &msg);
+    }
+
     let run = LoopRun {
         run_id: workspace.run_id.clone(),
         requirement: requirement.to_string(),
@@ -545,6 +566,8 @@ fn finalize(
         changed,
         highlight,
         total_ms: started.elapsed().as_millis() as u64,
+        branch,
+        base: workspace.base.clone(),
     };
     atomic_write(&workspace.root.join("report.md"), &run.to_report_markdown())?;
     atomic_write(&workspace.root.join("run.json"), &run.to_run_json())?;
