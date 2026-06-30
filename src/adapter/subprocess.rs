@@ -368,6 +368,91 @@ fn extract_json_string_field(line: &str, field: &str) -> Option<String> {
     None
 }
 
+/// Collect every `"key":"value"` string in a line, in order (reversing the common escapes).
+/// Used to pull a `TodoWrite` plan's parallel `content` / `status` arrays without a JSON
+/// parser.
+fn collect_string_fields(line: &str, field: &str) -> Vec<String> {
+    let key = format!("\"{field}\":\"");
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(&key) {
+        let start = from + rel + key.len();
+        let mut val = String::new();
+        let mut escaped = false;
+        let mut end = start;
+        for c in line[start..].chars() {
+            end += c.len_utf8();
+            if escaped {
+                match c {
+                    'n' => val.push('\n'),
+                    't' => val.push('\t'),
+                    'r' => val.push('\r'),
+                    o => val.push(o),
+                }
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                break;
+            } else {
+                val.push(c);
+            }
+        }
+        out.push(val);
+        from = end;
+    }
+    out
+}
+
+/// Bound a reasoning/thinking snippet to a short, single-ish line for the feed.
+fn shorten_reasoning(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.chars().count() > 200 {
+        let t: String = joined.chars().take(199).collect();
+        format!("{t}…")
+    } else {
+        joined
+    }
+}
+
+/// Bound a tool result / command output: keep the last ~12 non-blank lines (errors live at
+/// the tail), each capped, total capped — so a full `cargo test` log stays glanceable.
+fn shorten_output(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail: &[&str] = if lines.len() > 12 {
+        &lines[lines.len() - 12..]
+    } else {
+        &lines
+    };
+    let mut out = String::new();
+    for line in tail {
+        let capped: String = line.chars().take(160).collect();
+        out.push_str(capped.trim_end());
+        out.push('\n');
+    }
+    let out = out.trim_end().to_string();
+    if out.chars().count() > 800 {
+        let t: String = out.chars().take(799).collect();
+        format!("{t}…")
+    } else {
+        out
+    }
+}
+
+/// Format a `TodoWrite` plan as a checklist from its parallel content/status arrays.
+fn format_plan(contents: &[String], statuses: &[String]) -> String {
+    let mut out = String::new();
+    for (i, content) in contents.iter().enumerate() {
+        let mark = match statuses.get(i).map(String::as_str) {
+            Some("completed") => "[x]",
+            Some("in_progress") => "[~]",
+            _ => "[ ]",
+        };
+        out.push_str(&format!("- {mark} {}\n", content.trim()));
+    }
+    out.trim_end().to_string()
+}
+
 /// Parse one Claude `--output-format stream-json` line into normalized events.
 /// Content blocks are bounded by splitting on the `{"type":"` marker.
 fn parse_claude_event(line: &str) -> Vec<LoopEvent> {
@@ -375,15 +460,47 @@ fn parse_claude_event(line: &str) -> Vec<LoopEvent> {
     for seg in line.split("{\"type\":\"") {
         if let Some(rest) = seg.strip_prefix("tool_use\"") {
             if let Some(name) = extract_json_string_field(rest, "name") {
-                let target = extract_json_string_field(rest, "file_path")
-                    .or_else(|| extract_json_string_field(rest, "command"))
-                    .or_else(|| extract_json_string_field(rest, "pattern"))
-                    .or_else(|| extract_json_string_field(rest, "path"))
-                    .unwrap_or_else(|| name.clone());
-                events.push(LoopEvent::Action {
-                    kind: map_claude_tool(&name),
-                    target: shorten_target(&target),
+                if name == "TodoWrite" {
+                    // A plan update: render the todos as a checklist rather than a bare action.
+                    let contents = collect_string_fields(rest, "content");
+                    if !contents.is_empty() {
+                        let statuses = collect_string_fields(rest, "status");
+                        events.push(LoopEvent::Plan {
+                            text: format_plan(&contents, &statuses),
+                        });
+                    }
+                } else {
+                    let target = extract_json_string_field(rest, "file_path")
+                        .or_else(|| extract_json_string_field(rest, "command"))
+                        .or_else(|| extract_json_string_field(rest, "url"))
+                        .or_else(|| extract_json_string_field(rest, "pattern"))
+                        .or_else(|| extract_json_string_field(rest, "path"))
+                        .or_else(|| extract_json_string_field(rest, "description"))
+                        .unwrap_or_else(|| name.clone());
+                    events.push(LoopEvent::Action {
+                        kind: map_claude_tool(&name),
+                        target: shorten_target(&target),
+                    });
+                }
+            }
+        } else if let Some(rest) = seg.strip_prefix("thinking\"") {
+            if let Some(text) = extract_json_string_field(rest, "thinking")
+                && !text.trim().is_empty()
+            {
+                events.push(LoopEvent::Reasoning {
+                    text: shorten_reasoning(text.trim()),
                 });
+            }
+        } else if let Some(rest) = seg.strip_prefix("tool_result\"") {
+            // A tool's result (e.g. a Bash command's output). String content is the common
+            // shape; array content falls back to its first text part.
+            if let Some(body) = extract_json_string_field(rest, "content")
+                .or_else(|| extract_json_string_field(rest, "text"))
+            {
+                let bounded = shorten_output(&body);
+                if !bounded.trim().is_empty() {
+                    events.push(LoopEvent::Output { text: bounded });
+                }
             }
         } else if let Some(rest) = seg.strip_prefix("text\"") {
             if let Some(text) = extract_json_string_field(rest, "text")
@@ -427,6 +544,25 @@ fn parse_codex_event(line: &str) -> Vec<LoopEvent> {
     {
         events.push(LoopEvent::Message {
             text: shorten_message(text.trim()),
+        });
+    }
+    // Reasoning items (`reasoning` / `agent_reasoning`).
+    if line.contains("\"reasoning\"")
+        && let Some(text) = extract_json_string_field(line, "text")
+        && !text.trim().is_empty()
+    {
+        events.push(LoopEvent::Reasoning {
+            text: shorten_reasoning(text.trim()),
+        });
+    }
+    // A completed command's aggregated output.
+    if line.contains("\"item.completed\"")
+        && line.contains("\"command_execution\"")
+        && let Some(out) = extract_json_string_field(line, "aggregated_output")
+        && !out.trim().is_empty()
+    {
+        events.push(LoopEvent::Output {
+            text: shorten_output(&out),
         });
     }
     if line.contains("\"turn.completed\"")
@@ -486,6 +622,25 @@ fn parse_opencode_event(line: &str) -> Vec<LoopEvent> {
             text: shorten_message(text.trim()),
         });
     }
+    // A reasoning part.
+    if line.contains("\"type\":\"reasoning\"")
+        && let Some(text) = extract_json_string_field(line, "text")
+        && !text.trim().is_empty()
+    {
+        events.push(LoopEvent::Reasoning {
+            text: shorten_reasoning(text.trim()),
+        });
+    }
+    // A tool's output, when the part carries one.
+    if (line.contains("\"tool\"") || line.contains("\"step-finish\""))
+        && let Some(out) =
+            extract_json_string_field(line, "output").or_else(|| extract_json_string_field(line, "stdout"))
+        && !out.trim().is_empty()
+    {
+        events.push(LoopEvent::Output {
+            text: shorten_output(&out),
+        });
+    }
     events
 }
 
@@ -497,6 +652,8 @@ fn map_opencode_tool(name: &str) -> ActionKind {
         "read" | "view" | "cat" => ActionKind::Read,
         "bash" | "shell" | "run" | "exec" => ActionKind::Command,
         "grep" | "glob" | "search" | "list" | "ls" => ActionKind::Search,
+        "webfetch" | "fetch" | "web" => ActionKind::Fetch,
+        "task" | "agent" | "subagent" => ActionKind::Task,
         _ => ActionKind::Other,
     }
 }
@@ -508,7 +665,9 @@ fn map_claude_tool(name: &str) -> ActionKind {
         "Edit" | "MultiEdit" | "NotebookEdit" => ActionKind::Edit,
         "Read" | "NotebookRead" => ActionKind::Read,
         "Bash" | "BashOutput" | "KillBash" => ActionKind::Command,
-        "Grep" | "Glob" | "WebSearch" | "WebFetch" => ActionKind::Search,
+        "Grep" | "Glob" | "WebSearch" => ActionKind::Search,
+        "WebFetch" => ActionKind::Fetch,
+        "Task" => ActionKind::Task,
         _ => ActionKind::Other,
     }
 }
@@ -641,6 +800,96 @@ mod tests {
             parse_codex_event(msg),
             vec![LoopEvent::Message {
                 text: "VERDICT: PASS".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_claude_thinking_as_reasoning() {
+        let line = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"thinking\",\"thinking\":\"The   bug is an overflow;\\nuse checked_mul.\"}]}}";
+        assert_eq!(
+            parse_claude_event(line),
+            vec![LoopEvent::Reasoning {
+                text: "The bug is an overflow; use checked_mul.".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_claude_tool_result_as_output() {
+        let line = "{\"type\":\"user\",\"message\":{\"content\":[\
+            {\"type\":\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"running 1 test\\ntest tests::ok ... ok\"}]}}";
+        assert_eq!(
+            parse_claude_event(line),
+            vec![LoopEvent::Output {
+                text: "running 1 test\ntest tests::ok ... ok".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_claude_todowrite_as_plan() {
+        let line = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"tool_use\",\"name\":\"TodoWrite\",\"input\":{\"todos\":[\
+            {\"content\":\"Read the file\",\"status\":\"completed\",\"activeForm\":\"Reading\"},\
+            {\"content\":\"Fix overflow\",\"status\":\"in_progress\",\"activeForm\":\"Fixing\"},\
+            {\"content\":\"Add a test\",\"status\":\"pending\",\"activeForm\":\"Testing\"}]}}]}}";
+        assert_eq!(
+            parse_claude_event(line),
+            vec![LoopEvent::Plan {
+                text: "- [x] Read the file\n- [~] Fix overflow\n- [ ] Add a test".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn maps_claude_web_and_task_tools() {
+        let fetch = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"tool_use\",\"name\":\"WebFetch\",\"input\":{\"url\":\"https://example.com/x\"}}]}}";
+        assert_eq!(
+            parse_claude_event(fetch),
+            vec![LoopEvent::Action {
+                kind: ActionKind::Fetch,
+                target: "https://example.com/x".to_string()
+            }]
+        );
+        let task = "{\"type\":\"assistant\",\"message\":{\"content\":[\
+            {\"type\":\"tool_use\",\"name\":\"Task\",\"input\":{\"description\":\"audit deps\"}}]}}";
+        assert_eq!(
+            parse_claude_event(task),
+            vec![LoopEvent::Action {
+                kind: ActionKind::Task,
+                target: "audit deps".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_codex_reasoning_and_command_output() {
+        let reasoning = "{\"type\":\"item.completed\",\"item\":{\"type\":\"reasoning\",\"text\":\"Plan: patch the guard.\"}}";
+        assert_eq!(
+            parse_codex_event(reasoning),
+            vec![LoopEvent::Reasoning {
+                text: "Plan: patch the guard.".to_string()
+            }]
+        );
+        let done = "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"command\":\"cargo test\",\"aggregated_output\":\"test result: ok. 3 passed\",\"exit_code\":0}}";
+        assert_eq!(
+            parse_codex_event(done),
+            vec![LoopEvent::Output {
+                text: "test result: ok. 3 passed".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_opencode_reasoning() {
+        let line = "{\"type\":\"reasoning\",\"text\":\"Considering the edge case.\"}";
+        assert_eq!(
+            parse_opencode_event(line),
+            vec![LoopEvent::Reasoning {
+                text: "Considering the edge case.".to_string()
             }]
         );
     }
