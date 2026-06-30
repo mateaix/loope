@@ -26,7 +26,7 @@ with real agents on real tasks (SWE-bench-style).
 | --- | --- | --- |
 | **Determinism** | identical `run.json` + artifacts across repeated `--dry-run`s | the harness must be a reproducible substrate; non-determinism here would poison every delivery measurement |
 | **Harness overhead** | wall-clock of a full dry-run loop (stub agents) | the orchestration must be negligible next to the model |
-| **Gating correctness** | converges *iff* verify passes and no reviewer blocks; otherwise stops at `--max-iters` | no false "converged"; honest failure |
+| **Gating correctness** | converges *iff* verify passes and no reviewer blocks; otherwise stops honestly (`max_iters` or `stalled`) | no false "converged"; honest failure |
 | **Artifact fidelity** | every step persists prompt / events / transcript / diff / result, and `events.jsonl` round-trips to cells | the run is auditable evidence, not a black box |
 
 ### Delivery metrics (real agents — the outcomes)
@@ -140,10 +140,12 @@ agents, so the numbers are pure harness):
 | Determinism | `run.json` **byte-identical** across repeated runs (modulo the run-id) |
 | Harness overhead | **~22–27 ms** wall-clock per full loop (engine self-timed at **1 ms**); the orchestration is negligible — essentially 100% of a real run's time/tokens is the agent, which is the intended design |
 | Gating (success) | converges in **1 iteration** when review passes and `cargo test` is green |
-| Gating (failure) | with a verifier that always fails, the loop **does not false-converge**: `converged=false, iterations=3, stop_reason=max_iters` |
+| Gating (failure) | with a verifier that always fails, the loop **does not false-converge**: `converged=false, stop_reason=stalled` (it detects the repeated identical failure and stops early instead of burning the budget) |
 | Artifacts | each step writes `prompt.md`, `events.jsonl`, `transcript.jsonl`, `changes.diff`, `result.md` — a complete, parseable audit trail |
 
 **Takeaway:** the harness is a reproducible, near-zero-overhead substrate with honest
+
+These runs also motivated a follow-up optimization (verify-first review, stall-stop, structured repair feedback) — see [`docs/specs/2026-06-30-loope-loop-optimization-spec.md`](../docs/specs/2026-06-30-loope-loop-optimization-spec.md).
 convergence gating and full per-step evidence — the preconditions for trustworthy delivery
 measurement.
 

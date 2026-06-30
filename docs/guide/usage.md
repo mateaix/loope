@@ -89,12 +89,19 @@ real run never touches your real source unless you pass `--in-place`.
 **iterations**. Each iteration is:
 
 ```text
-implement / fix → review (1..N reviewers) → verify
+implement / fix → verify → review (1..N reviewers, only when verify passes)
 ```
 
+When a verify command is configured, Loope runs **verify first** and runs the reviewers
+**only if verify passes** — a failing verify is the actionable signal, so the loop goes
+straight to repair instead of spending a reviewer round-trip on a change the tests already
+reject (review then vets a passing change for what tests can't catch). With **no** verify
+command, review runs every iteration (it is the only gate).
+
 Iteration 1's implementer does the initial implementation; each later iteration is a
-**fix** turn whose prompt carries the previous iteration's review blockers and verifier
-failure output, asked to resolve them.
+**fix** turn whose prompt **leads with the specific failing checks** parsed from the verifier
+output (failed test ids + assertion/error lines), followed by any review blockers and a
+bounded output tail, asked to resolve them.
 
 ```text
 requirement → [implement → review → verify] → [fix → review → verify] → … → converged
@@ -105,6 +112,9 @@ requirement → [implement → review → verify] → [fix → review → verify
 - **Converged** — verification passed and no reviewer reported a blocker. Stops, success.
 - **Stopped at the iteration cap** — ran `--max-iters` iterations (default 3) without
   converging. Stops, failure.
+- **Stopped: no progress** (`stalled`) — an iteration made no progress (the implementer
+  changed nothing, or the verify failure was identical to the previous iteration). Loope
+  stops early rather than burn the remaining budget re-attempting a stuck fix.
 - **Halted: a step failed** — an agent invocation failed or timed out; retrying a crashed
   agent is not useful, so the loop stops immediately.
 
