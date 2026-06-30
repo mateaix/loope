@@ -110,6 +110,9 @@ enum CellDto {
     Reasoning {
         text: String,
     },
+    Plan {
+        text: String,
+    },
     Action {
         action: String,
         target: String,
@@ -201,6 +204,7 @@ fn cell_to_dto(cell: Cell) -> CellDto {
         },
         Cell::Markdown { text } => CellDto::Markdown { text },
         Cell::Reasoning { text } => CellDto::Reasoning { text },
+        Cell::Plan { text } => CellDto::Plan { text },
         Cell::Action { kind, target } => CellDto::Action {
             action: kind.label().to_string(),
             target,

@@ -13,7 +13,7 @@ const AGENT_ICONS = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7 4 12l5 5M15 7l5 5-5 5"/></svg>',
 };
 const AGENT_COLORS = { claude: "#5ba8ff", codex: "#ff9f45", opencode: "#c08cff" };
-const GUT = { run: "#7fb4ff", diff: "#43e08f", reasoning: "#c08cff", action: "#5ba8ff", notice: "#ff9f45", markdown: "#7fb4ff" };
+const GUT = { run: "#7fb4ff", diff: "#43e08f", reasoning: "#c08cff", plan: "#43e08f", action: "#5ba8ff", notice: "#ff9f45", markdown: "#7fb4ff" };
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -215,6 +215,20 @@ function renderCell(c) {
       fold.textContent = body.style.display === "none" ? "folded — click to expand" : "reasoning";
     };
     rc.appendChild(body);
+  } else if (c.kind === "plan") {
+    head.appendChild(el("span", "tag plan", "plan"));
+    rc.appendChild(head);
+    const list = el("div", "plan");
+    for (const line of (c.text || "").split("\n")) {
+      const m = line.match(/^- \[(.)\]\s*(.*)$/);
+      if (!m) continue;
+      const done = m[1] === "x", active = m[1] === "~";
+      const item = el("div", "plan-item" + (done ? " done" : active ? " active" : ""));
+      item.appendChild(el("span", "plan-box", done ? "✓" : active ? "▸" : "○"));
+      item.appendChild(document.createTextNode(m[2]));
+      list.appendChild(item);
+    }
+    rc.appendChild(list);
   } else if (c.kind === "action") {
     head.appendChild(el("span", "tag", c.action));
     head.appendChild(codeEl(c.target));

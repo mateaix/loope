@@ -115,6 +115,8 @@ pub enum Cell {
     Markdown { text: String },
     /// Reasoning / "thinking" (folded by default in a UI).
     Reasoning { text: String },
+    /// A plan / todo checklist (rendered as a checklist in a UI).
+    Plan { text: String },
     /// A tool action (read / edit / write / run / search).
     Action { kind: ActionKind, target: String },
     /// A model banner, token usage, or an error.
@@ -141,7 +143,7 @@ impl Cell {
                 exit_code: None,
                 state: ExecState::Done,
             },
-            LoopEvent::Plan { text } => Cell::Markdown { text: text.clone() },
+            LoopEvent::Plan { text } => Cell::Plan { text: text.clone() },
             LoopEvent::Usage {
                 input_tokens,
                 output_tokens,
@@ -182,6 +184,9 @@ impl Cell {
             Cell::Reasoning { text } => {
                 format!("{{\"cell\":\"reasoning\",\"text\":\"{}\"}}", esc(text))
             }
+            Cell::Plan { text } => {
+                format!("{{\"cell\":\"plan\",\"text\":\"{}\"}}", esc(text))
+            }
             Cell::Action { kind, target } => format!(
                 "{{\"cell\":\"action\",\"kind\":\"{}\",\"target\":\"{}\"}}",
                 kind.as_str(),
@@ -213,6 +218,9 @@ impl Cell {
                 text: field_str(line, "text").unwrap_or_default(),
             },
             "reasoning" => Cell::Reasoning {
+                text: field_str(line, "text").unwrap_or_default(),
+            },
+            "plan" => Cell::Plan {
                 text: field_str(line, "text").unwrap_or_default(),
             },
             "action" => Cell::Action {
@@ -302,6 +310,9 @@ mod tests {
             Cell::Reasoning {
                 text: "needs a checked_mul".to_string(),
             },
+            Cell::Plan {
+                text: "- [x] read\n- [ ] fix".to_string(),
+            },
             Cell::Action {
                 kind: ActionKind::Edit,
                 target: "src/lib.rs".to_string(),
@@ -332,12 +343,18 @@ mod tests {
             },
             LoopEvent::Message { text: "fixed it".to_string() },
             LoopEvent::Usage { input_tokens: 1200, output_tokens: 340 },
+            LoopEvent::Reasoning { text: "think".to_string() },
+            LoopEvent::Output { text: "ok".to_string() },
+            LoopEvent::Plan { text: "- [ ] x".to_string() },
         ];
         let cells = cells_from_events(&events);
         assert!(matches!(cells[0], Cell::Notice { level: NoticeLevel::Info, .. }));
         assert!(matches!(cells[1], Cell::Action { kind: ActionKind::Command, .. }));
         assert!(matches!(cells[2], Cell::Markdown { .. }));
         assert!(matches!(cells[3], Cell::Notice { level: NoticeLevel::Usage, .. }));
+        assert!(matches!(cells[4], Cell::Reasoning { .. }));
+        assert!(matches!(cells[5], Cell::Exec { state: ExecState::Done, .. }));
+        assert!(matches!(cells[6], Cell::Plan { .. }));
     }
 
     #[test]

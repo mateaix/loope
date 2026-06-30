@@ -146,7 +146,15 @@ html, body {
 .tag.run { background: rgba(127, 180, 255, 0.2); color: #5b8fd6; }
 .tag.diff { background: rgba(67, 224, 143, 0.18); color: #2f9c6a; }
 .tag.reasoning { background: rgba(192, 140, 255, 0.2); color: #8a5fd0; }
+.tag.plan { background: rgba(67, 224, 143, 0.18); color: #1f9d5e; }
 .tag.notice { background: rgba(255, 159, 69, 0.18); color: #c97a2e; }
+.plan { margin: 8px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.plan-item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+.plan-item .plan-box { font-size: 11px; width: 14px; text-align: center; color: var(--text-2); flex: none; }
+.plan-item.done { color: var(--text-2); text-decoration: line-through; opacity: 0.7; }
+.plan-item.done .plan-box { color: var(--add); }
+.plan-item.active { color: var(--text-1); font-weight: 600; }
+.plan-item.active .plan-box { color: var(--accent-text); }
 .meta { margin-left: auto; font-size: 11.5px; color: var(--text-2); }
 .out { margin: 8px 0 0; padding: 9px 11px; border-radius: 9px; background: var(--scrim); font-family: "SF Mono", ui-monospace, monospace; font-size: 11.5px; line-height: 1.5; color: var(--text-1); white-space: pre-wrap; overflow-x: auto; }
 .out .add { color: var(--add); }

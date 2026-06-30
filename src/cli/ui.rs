@@ -499,8 +499,8 @@ impl StepObserver for LiveObserver {
             LoopEvent::Message { text } => {
                 let _ = self.tx.send(RenderMsg::Message { text: text.clone() });
             }
-            // T4 adds dedicated styled RenderMsg variants; for now surface them as text so the
-            // animated feed still shows reasoning / output / plan.
+            // The animated feed surfaces reasoning / output / plan as prefixed text lines
+            // (the browse TUI and print feed render them with dedicated styling).
             LoopEvent::Reasoning { text } => {
                 let _ = self.tx.send(RenderMsg::Message { text: format!("… {text}") });
             }
