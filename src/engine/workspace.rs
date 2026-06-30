@@ -24,6 +24,18 @@ const SKIP_DIRS: &[&str] = &[".git", ".loope", ".claude", "target", "node_module
 /// detection (editor/OS cruft that an agent should never see or "change").
 const SKIP_FILES: &[&str] = &[".DS_Store"];
 
+/// How a run's working tree is materialized from the source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceMode {
+    /// Edit the caller's real directory directly (no copy, no branch).
+    InPlace,
+    /// Copy the source tree into `<run>/workspace/` (non-git, or forced with `--copy`).
+    Copy,
+    /// Check the source's `HEAD` out into a git worktree at `<run>/workspace/` on a new
+    /// branch. `branch == None` means the default `loope/<run-id>`.
+    Worktree { branch: Option<String> },
+}
+
 /// One run's directory tree.
 #[derive(Clone, Debug)]
 pub struct RunWorkspace {
@@ -33,39 +45,86 @@ pub struct RunWorkspace {
     pub root: PathBuf,
     /// Working tree the agents read and edit.
     pub workspace_dir: PathBuf,
-    /// Whether the working tree is the caller's real directory (true) or a copy.
-    pub in_place: bool,
+    /// How the working tree was materialized (resolved — never `Worktree { None }`).
+    pub mode: WorkspaceMode,
+    /// For a worktree run: the source `HEAD` short-sha the branch was cut from.
+    pub base: Option<String>,
 }
 
 impl RunWorkspace {
-    /// Create the next run directory under `base`, seeding the working tree from
-    /// `source`. When `in_place` is true the working tree IS `source` (no copy);
-    /// otherwise `source` is copied into `<run>/workspace/`.
+    /// Whether the working tree is the caller's real directory.
+    pub fn in_place(&self) -> bool {
+        self.mode == WorkspaceMode::InPlace
+    }
+
+    /// The result branch name for a worktree run (`None` otherwise).
+    pub fn branch(&self) -> Option<&str> {
+        match &self.mode {
+            WorkspaceMode::Worktree { branch } => branch.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Create the next run directory under `base`, choosing a workspace mode automatically:
+    /// `in_place` → [`WorkspaceMode::InPlace`]; else a git repo → a worktree on
+    /// `loope/<run-id>`; else a copy. (Explicit modes go through [`Self::create_with_mode`].)
     pub fn create(
         base: &Path,
         source: &Path,
         in_place: bool,
         requirement: &str,
     ) -> io::Result<Self> {
+        let mode = if in_place {
+            WorkspaceMode::InPlace
+        } else if crate::engine::git::is_repo(source) {
+            WorkspaceMode::Worktree { branch: None }
+        } else {
+            WorkspaceMode::Copy
+        };
+        Self::create_with_mode(base, source, mode, requirement)
+    }
+
+    /// Create the next run directory under `base` with an explicit [`WorkspaceMode`]. A
+    /// requested worktree that git refuses falls back to a copy (so a run never aborts on a
+    /// git hiccup).
+    pub fn create_with_mode(
+        base: &Path,
+        source: &Path,
+        mode: WorkspaceMode,
+        requirement: &str,
+    ) -> io::Result<Self> {
+        use crate::engine::git;
+
         fs::create_dir_all(base)?;
         // Keep loope's artifacts out of version control (the run dir, and any copied or
         // worktree workspace) so they never show up as unversioned files in the user's repo.
         if let Some(loope_dir) = base.parent()
-            && crate::engine::git::is_repo(source)
+            && git::is_repo(source)
         {
-            let _ = crate::engine::git::ensure_loope_ignored(loope_dir);
+            let _ = git::ensure_loope_ignored(loope_dir);
         }
         let run_id = next_run_id(base, requirement)?;
         let root = base.join(&run_id);
         fs::create_dir_all(&root)?;
 
-        let workspace_dir = if in_place {
-            source.to_path_buf()
-        } else {
-            let ws = root.join("workspace");
-            fs::create_dir_all(&ws)?;
-            copy_tree(source, &ws)?;
-            ws
+        let mut base_sha = None;
+        let (workspace_dir, resolved) = match mode {
+            WorkspaceMode::InPlace => (source.to_path_buf(), WorkspaceMode::InPlace),
+            WorkspaceMode::Copy => (copy_workspace(&root, source)?, WorkspaceMode::Copy),
+            WorkspaceMode::Worktree { branch } => {
+                let ws = root.join("workspace");
+                let branch = branch
+                    .unwrap_or_else(|| format!("loope/{}", git::sanitize_ref(&run_id)));
+                base_sha = git::head_sha(source);
+                match git::worktree_add(source, &branch, &ws) {
+                    Ok(()) => (ws, WorkspaceMode::Worktree { branch: Some(branch) }),
+                    // git refused (e.g. detached/empty repo) — fall back to a copy.
+                    Err(_) => {
+                        base_sha = None;
+                        (copy_workspace(&root, source)?, WorkspaceMode::Copy)
+                    }
+                }
+            }
         };
         fs::create_dir_all(root.join("agents"))?;
 
@@ -73,7 +132,8 @@ impl RunWorkspace {
             run_id,
             root,
             workspace_dir,
-            in_place,
+            mode: resolved,
+            base: base_sha,
         })
     }
 
@@ -536,6 +596,14 @@ fn cheap_diff(a: &[&str], b: &[&str]) -> (usize, usize, String) {
     (added, removed, "(diff too large to display)\n".to_string())
 }
 
+/// Copy the source tree into `<root>/workspace/` and return the workspace path.
+fn copy_workspace(root: &Path, source: &Path) -> io::Result<PathBuf> {
+    let ws = root.join("workspace");
+    fs::create_dir_all(&ws)?;
+    copy_tree(source, &ws)?;
+    Ok(ws)
+}
+
 /// Recursively copy `src` into `dst`, skipping heavy/irrelevant directories and
 /// symlinks.
 fn copy_tree(src: &Path, dst: &Path) -> io::Result<()> {
@@ -596,6 +664,64 @@ mod tests {
         // A requirement with nothing slug-able falls back to just the number.
         assert_eq!(next_run_id(&base, "🎉🎉").unwrap(), "0008");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Run `git` in `dir`, asserting success. Returns trimmed stdout.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn worktree_mode_creates_a_branch_and_isolated_tree() {
+        let dir = temp_base("wt");
+        let source = dir.join("repo");
+        fs::create_dir_all(&source).unwrap();
+        git(&source, &["init", "-q"]);
+        git(&source, &["config", "user.email", "t@t"]);
+        git(&source, &["config", "user.name", "t"]);
+        fs::write(source.join("file.txt"), "v1\n").unwrap();
+        git(&source, &["add", "-A"]);
+        git(&source, &["commit", "-qm", "init"]);
+
+        let base = source.join(".loope").join("runs");
+        let ws = RunWorkspace::create(&base, &source, false, "review rfc").unwrap();
+
+        // Default in a git repo → a worktree on loope/<run-id>, not a copy.
+        assert_eq!(ws.mode, WorkspaceMode::Worktree { branch: Some("loope/0001-review-rfc".into()) });
+        assert_eq!(ws.branch(), Some("loope/0001-review-rfc"));
+        assert!(ws.base.is_some());
+        // The workspace is the worktree (a `.git` file points back at the main repo).
+        assert_eq!(ws.workspace_dir, base.join("0001-review-rfc").join("workspace"));
+        assert!(ws.workspace_dir.join(".git").exists());
+        assert!(ws.workspace_dir.join("file.txt").exists());
+        // The branch exists in the source repo.
+        let branches = git(&source, &["branch", "--list", "loope/0001-review-rfc"]);
+        assert!(branches.contains("loope/0001-review-rfc"), "branch missing: {branches}");
+        // The main working tree stays clean (artifacts are git-ignored).
+        assert_eq!(git(&source, &["status", "--porcelain"]), "");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_git_source_falls_back_to_copy() {
+        let dir = temp_base("nogit");
+        let source = dir.join("plain");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("file.txt"), "v1\n").unwrap();
+        let base = dir.join("runs");
+        let ws = RunWorkspace::create(&base, &source, false, "demo").unwrap();
+        assert_eq!(ws.mode, WorkspaceMode::Copy);
+        assert!(!ws.in_place());
+        assert!(ws.workspace_dir.join("file.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

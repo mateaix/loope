@@ -18,6 +18,60 @@ pub fn is_repo(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The short HEAD sha of the repo at `dir`, if resolvable (the point a worktree branches
+/// from — recorded so the end-of-run summary can print `git diff <base>..<branch>`).
+pub fn head_sha(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Sanitize a string into a valid git ref body (the branch suffix). Keeps `[A-Za-z0-9_/-]`,
+/// turns everything else (including `.`, which git ref rules restrict) into `-`, and trims
+/// separators git dislikes at the ends. Never returns empty.
+pub fn sanitize_ref(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '/' => out.push(c),
+            _ => out.push('-'),
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '-' || c == '/');
+    if trimmed.is_empty() {
+        "run".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Add a git worktree at `path` on a new branch `branch`, based on the source's `HEAD`.
+/// `path` must not yet exist (git creates it). Returns the git error text on failure.
+pub fn worktree_add(source: &Path, branch: &str, path: &Path) -> std::io::Result<()> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["worktree", "add", "-b", branch])
+        .arg(path)
+        .arg("HEAD")
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
 /// Ensure loope's artifact directory is git-ignored, so neither the run artifacts nor a
 /// copied/worktree workspace ever show up as unversioned files. Writes
 /// `<loope_dir>/.gitignore` containing `*` (ignore the whole directory's contents, including
@@ -56,5 +110,13 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         assert!(!is_repo(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_ref_keeps_safe_chars() {
+        assert_eq!(sanitize_ref("0001-review-rfc-076"), "0001-review-rfc-076");
+        assert_eq!(sanitize_ref("feat/x y..z"), "feat/x-y--z");
+        assert_eq!(sanitize_ref("--/--"), "run");
+        assert_eq!(sanitize_ref("ünïcode"), "n-code");
     }
 }
