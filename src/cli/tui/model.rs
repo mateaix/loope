@@ -103,10 +103,40 @@ fn file_age(path: &Path) -> String {
 pub fn load_run(dir: &Path) -> Option<RunDetail> {
     let md = fs::read_to_string(dir.join("report.md")).ok()?;
     let mut detail = parse_report(&md, dir);
+    // report.md stores a one-line message summary; replace it with the full `## Message`
+    // section from each step's result.md so the preview shows the complete review findings.
+    for step in &mut detail.steps {
+        let result_md = dir.join("agents").join(step_dir_name(step)).join("result.md");
+        if let Some(full) = read_result_message(&result_md) {
+            step.message = full;
+        }
+    }
     detail.highlight = fs::read_to_string(dir.join("highlight"))
         .ok()
         .and_then(|text| loope::engine::Highlight::from_storage(&text));
     Some(detail)
+}
+
+/// A step's `agents/` subdirectory name, e.g. `02-reviewer-codex`.
+fn step_dir_name(step: &StepView) -> String {
+    format!("{:02}-{}-{}", step.num, step.role, step.adapter.to_ascii_lowercase())
+}
+
+/// Read the full `## Message` section from a step's `result.md` (everything up to the next
+/// `## ` header). Returns `None` when the file or section is missing/empty.
+fn read_result_message(path: &Path) -> Option<String> {
+    let md = fs::read_to_string(path).ok()?;
+    let after = md.split_once("## Message")?.1;
+    let mut body = String::new();
+    for line in after.lines().skip(1) {
+        if line.starts_with("## ") {
+            break;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    let trimmed = body.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// Parse `report.md` (the format produced by `LoopRun::to_report_markdown`).
@@ -248,6 +278,37 @@ mod tests {
         assert_eq!(reviewer.verdict.as_deref(), Some("blocked (needs work)"));
 
         assert_eq!(detail.steps[2].iteration, 2);
+    }
+
+    #[test]
+    fn reads_full_message_section_from_result_md() {
+        let dir = std::env::temp_dir().join(format!("loope-msg-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("result.md");
+        fs::write(
+            &path,
+            "# Result\n\n- Success: true\n\n## Message\n\n**Blocking Findings**\n\n1. fix the guard\n2. add a test\n\nVERDICT: BLOCK\n\n## Changed Files\n\n- src/x.rs\n",
+        )
+        .unwrap();
+        let msg = read_result_message(&path).unwrap();
+        assert!(msg.starts_with("**Blocking Findings**"));
+        assert!(msg.contains("1. fix the guard"));
+        assert!(msg.contains("VERDICT: BLOCK"));
+        // Stops at the next section header.
+        assert!(!msg.contains("Changed Files"));
+        assert!(read_result_message(&dir.join("missing.md")).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn step_dir_name_matches_layout() {
+        let step = StepView {
+            num: 2,
+            role: "reviewer".to_string(),
+            adapter: "Codex".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(step_dir_name(&step), "02-reviewer-codex");
     }
 
     #[test]
