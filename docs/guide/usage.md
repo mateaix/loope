@@ -294,7 +294,8 @@ prefix (`0007`). Everything about a run lives under `.loope/runs/<run-id>/` (git
       home/               this step's private CLI config/session dir
       prompt.md           the exact prompt sent
       transcript.jsonl    the captured raw output stream
-      events.jsonl        normalized events (actions, messages)
+      events.jsonl        normalized events (actions, messages, reasoning, command
+                          output, plans/todos, model, tokens)
       result.md           the parsed result (message + changed files)
       changes.diff        the unified diff this step produced (write steps)
     02-reviewer-codex/...
@@ -311,9 +312,10 @@ On a TTY, `loope run` renders a small visual identity built from Loope's motifs 
 loop glyph and a `design → implement → review → verify` pipeline tinted by the logo
 palette (Claude blue, Codex orange).
 
-While a step runs, Loope streams the agent's actions as a **live activity feed** (file
-reads/edits, commands, a short message), under an **animated status line** showing a
-spinner, elapsed time, the last action, and `[n/m]` progress — updating ~10×/s even while
+While a step runs, Loope streams the agent's activity as a **live activity feed** — file
+reads/edits, commands **and their output**, web fetches, sub-agent tasks, the agent's
+**reasoning**, **plan/todo checklists**, and short messages — under an **animated status
+line** showing a spinner, elapsed time, the last action, and `[n/m]` progress — updating ~10×/s even while
 the agent is quiet:
 
 ```text
@@ -392,7 +394,7 @@ with their file tools (or pastes clipboard text when there's no image). In the
 | `→`/`l`, `Enter` | open / focus the detail pane |
 | `←`/`h`, `Esc` | back / focus the run list |
 | `Tab` | switch pane |
-| `a` | toggle the agent activity stream (actions, messages, model, tokens) |
+| `a` | toggle the agent activity stream (actions, output, reasoning, plans, messages, model, tokens) |
 | `d` / `t` | toggle the diff / transcript preview |
 | `g` / `G` | top / bottom |
 | `PgUp` / `PgDn` | scroll the preview |
@@ -442,7 +444,7 @@ What it does:
 - **Live runs** — type a requirement in the command bar and press **Enter**; the loop's plan
   (an implement → review → verify pipeline) sits over a single scrollable transcript that
   streams typed **cells** live — shell commands and their output, file diffs, assistant
-  markdown, reasoning, and notices. **Esc** stops the run (cooperatively, at the next step
+  markdown, reasoning, plan/todo checklists, and notices. **Esc** stops the run (cooperatively, at the next step
   boundary). A "caught & fixed" hero card appears when a reviewer's block is fixed later.
 - **Projects & sessions** — runs grouped by project; double-click a run to rename it, the
   **+** on PROJECTS registers a directory, and **Shift+Enter** runs a full-text search across

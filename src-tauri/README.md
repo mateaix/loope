@@ -23,7 +23,7 @@ front-end is **vanilla** HTML/CSS/JS — no npm or bundler — served statically
   brand icon each; install hints when missing.
 - **Live runs** — type a requirement, press Enter; the loop's plan (a pipeline strip) sits
   over a single scrollable transcript of typed cells (exec / diff / markdown / reasoning /
-  action / notice) streamed live. Esc stops (cooperatively, at the next step boundary).
+  plan / action / notice) streamed live. Esc stops (cooperatively, at the next step boundary).
 - **Convergence card** — the "caught & fixed" hero when a reviewer's block is fixed later.
 - **Projects & sessions** — runs grouped by project, double-click to rename, register a
   project with "+", full-text search across past runs (Shift+Enter).
