@@ -355,58 +355,8 @@ pub fn execute_loop(
             break 'iterations;
         }
 
-        // Review (reviewers run concurrently on the current state).
-        let mut review_steps = Vec::new();
-        let mut review_prompts = Vec::new();
-        for &reviewer in &config.reviewers {
-            step_id += 1;
-            let rstep = make_step(step_id, Role::Reviewer, reviewer, "review produced");
-            let rprompt = build_prompt(&rstep, &config.requirement, None, design_contract.as_deref());
-            review_steps.push(rstep);
-            review_prompts.push(rprompt);
-        }
-        for (s, p) in review_steps.iter().zip(&review_prompts) {
-            workspace.agent_home(s.id, s.role, s.adapter)?;
-            atomic_write(&workspace.agent_dir(s.id, s.role, s.adapter).join("prompt.md"), p)?;
-        }
-        let review_outcomes = if review_steps.len() == 1 {
-            if let Some(observer) = observer {
-                observer.on_step_start(&review_steps[0]);
-            }
-            vec![run_reviewer(workspace, &review_steps[0], &review_prompts[0], iter, invoker)?]
-        } else {
-            run_reviewers_parallel(workspace, &review_steps, &review_prompts, iter, invoker)?
-        };
-
-        let mut has_blockers = false;
-        let mut blocker_messages = Vec::new();
-        let mut review_failed = false;
-        for outcome in review_outcomes {
-            if let Some(verdict) = &outcome.review_verdict
-                && verdict.has_blockers
-            {
-                has_blockers = true;
-                blocker_messages.push(format!(
-                    "{}: {}",
-                    outcome.adapter.display_name(),
-                    first_line(&outcome.result.message)
-                ));
-            }
-            if !outcome.result.success {
-                review_failed = true;
-            }
-            finish(observer, &mut outcomes, outcome);
-        }
-        if review_failed {
-            stop_reason = StopReason::StepFailed;
-            break 'iterations;
-        }
-        if observer.is_some_and(|o| o.should_cancel()) {
-            stop_reason = StopReason::Cancelled;
-            break 'iterations;
-        }
-
-        // Verify (only when a real check command is configured).
+        // Verify first (when configured): a failing verify is the actionable signal, so go
+        // straight to repair without spending a reviewer round-trip on a broken change.
         let mut verify_pass = true;
         let mut verify_failure: Option<String> = None;
         if let Some(cmd) = &config.verify_command {
@@ -426,6 +376,66 @@ pub fn execute_loop(
                 "verification failed"
             };
             finish(observer, &mut outcomes, step_outcome(&vstep, iter, vrun, verify_pass, vnotes, None, vprompt));
+        }
+
+        if observer.is_some_and(|o| o.should_cancel()) {
+            stop_reason = StopReason::Cancelled;
+            break 'iterations;
+        }
+
+        // Review — when there is no verifier (review is the only gate) or the change already
+        // passes verify (review then vets what the tests can't catch). On a failing verify,
+        // skip review: the failure is the signal and review tends to rubber-stamp anyway.
+        let mut has_blockers = false;
+        let mut blocker_messages = Vec::new();
+        if config.verify_command.is_none() || verify_pass {
+            let mut review_steps = Vec::new();
+            let mut review_prompts = Vec::new();
+            for &reviewer in &config.reviewers {
+                step_id += 1;
+                let rstep = make_step(step_id, Role::Reviewer, reviewer, "review produced");
+                let rprompt = build_prompt(&rstep, &config.requirement, None, design_contract.as_deref());
+                review_steps.push(rstep);
+                review_prompts.push(rprompt);
+            }
+            for (s, p) in review_steps.iter().zip(&review_prompts) {
+                workspace.agent_home(s.id, s.role, s.adapter)?;
+                atomic_write(&workspace.agent_dir(s.id, s.role, s.adapter).join("prompt.md"), p)?;
+            }
+            let review_outcomes = if review_steps.len() == 1 {
+                if let Some(observer) = observer {
+                    observer.on_step_start(&review_steps[0]);
+                }
+                vec![run_reviewer(workspace, &review_steps[0], &review_prompts[0], iter, invoker)?]
+            } else {
+                run_reviewers_parallel(workspace, &review_steps, &review_prompts, iter, invoker)?
+            };
+
+            let mut review_failed = false;
+            for outcome in review_outcomes {
+                if let Some(verdict) = &outcome.review_verdict
+                    && verdict.has_blockers
+                {
+                    has_blockers = true;
+                    blocker_messages.push(format!(
+                        "{}: {}",
+                        outcome.adapter.display_name(),
+                        first_line(&outcome.result.message)
+                    ));
+                }
+                if !outcome.result.success {
+                    review_failed = true;
+                }
+                finish(observer, &mut outcomes, outcome);
+            }
+            if review_failed {
+                stop_reason = StopReason::StepFailed;
+                break 'iterations;
+            }
+            if observer.is_some_and(|o| o.should_cancel()) {
+                stop_reason = StopReason::Cancelled;
+                break 'iterations;
+            }
         }
 
         if verify_pass && !has_blockers {
@@ -1105,6 +1115,23 @@ mod tests {
         assert_eq!(run.stop_reason, StopReason::MaxIters);
         assert_eq!(run.iterations, 2);
         assert!(!run.all_passed());
+    }
+
+    #[test]
+    fn failing_verify_skips_review() {
+        // With a verifier that fails, no reviewer step runs that iteration (verify-first).
+        let (run, _ws) = run(&config(1, Some("exit 1")), &StubInvoker);
+        let reviews = run.outcomes.iter().filter(|o| o.role == Role::Reviewer).count();
+        assert_eq!(reviews, 0, "review should be skipped on a failing verify");
+        assert!(!run.all_passed());
+    }
+
+    #[test]
+    fn passing_verify_still_runs_review() {
+        let (run, _ws) = run(&config(1, Some("exit 0")), &StubInvoker);
+        let reviews = run.outcomes.iter().filter(|o| o.role == Role::Reviewer).count();
+        assert_eq!(reviews, 1, "review runs to vet a change that already passes verify");
+        assert_eq!(run.stop_reason, StopReason::Converged);
     }
 
     /// Implementer fails immediately.
