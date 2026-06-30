@@ -52,6 +52,9 @@ fn render_running(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{} ", app.spinner_char()), Style::new().fg(style::BRAND)),
             Span::styled(active.clone(), Style::new().fg(style::BRAND).bold()),
         ];
+        if let Some(elapsed) = app.active_elapsed() {
+            head.push(Span::styled(format!("  · {elapsed}"), Style::new().fg(style::PASS)));
+        }
         if let Some(model) = &app.model {
             head.push(Span::styled(format!("  · {model}"), Style::new().fg(style::DIM)));
         }

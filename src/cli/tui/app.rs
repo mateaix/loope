@@ -90,6 +90,8 @@ pub struct App {
     stop_requested: bool,
     pub live_iter: Option<(usize, usize)>,
     pub active: Option<String>,
+    /// When the active step started, for a live elapsed-time readout.
+    pub active_since: Option<std::time::Instant>,
     /// The active step's normalized event stream (actions + messages).
     pub activity: Vec<LoopEvent>,
     /// The active step's model, if the CLI reported one.
@@ -167,6 +169,7 @@ impl App {
             stop_requested: false,
             live_iter: None,
             active: None,
+            active_since: None,
             activity: Vec::new(),
             model: None,
             tokens: None,
@@ -429,6 +432,7 @@ impl App {
         self.stop_requested = false;
         self.live_iter = None;
         self.active = None;
+        self.active_since = None;
         self.activity.clear();
         self.model = None;
         self.tokens = None;
@@ -442,6 +446,14 @@ impl App {
 
     pub fn spinner_char(&self) -> &'static str {
         SPINNER[self.spinner % SPINNER.len()]
+    }
+
+    /// How long the active step has been running, as `M:SS`, for a live progress readout.
+    pub fn active_elapsed(&self) -> Option<String> {
+        self.active_since.map(|t| {
+            let s = t.elapsed().as_secs();
+            format!("{}:{:02}", s / 60, s % 60)
+        })
     }
 
     /// Ask the running loop to stop (Esc while live).
@@ -462,6 +474,7 @@ impl App {
             LiveMsg::Iteration { n, total } => self.live_iter = Some((n, total)),
             LiveMsg::StepStart { role, adapter } => {
                 self.active = Some(format!("{role} · {adapter}"));
+                self.active_since = Some(std::time::Instant::now());
                 self.activity.clear();
                 self.model = None;
                 self.tokens = None;
@@ -484,6 +497,7 @@ impl App {
                     self.detail_selected = detail.steps.len().saturating_sub(1);
                 }
                 self.active = None;
+        self.active_since = None;
             }
         }
     }
@@ -495,6 +509,7 @@ impl App {
         self.live_done = true;
         self.stopping = false;
         self.active = None;
+        self.active_since = None;
         self.screen = Screen::Browse;
         let id = self.detail.as_ref().map(|d| d.id.clone());
         self.runs = load_runs(&self.base);

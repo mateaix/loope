@@ -69,25 +69,19 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .title(Span::styled(label, Style::new().fg(color)))
         .border_style(Style::new().fg(color));
-    let inner = block.inner(area);
 
-    let body = if !focused && app.input.is_empty() {
-        Line::from(Span::styled(
-            "› press i to type a new requirement (or /command)",
-            Style::new().fg(style::DIM),
-        ))
+    if !focused && app.input.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "› press i to type a new requirement (or /command)",
+                Style::new().fg(style::DIM),
+            )))
+            .block(block),
+            area,
+        );
     } else {
-        Line::from(vec![
-            Span::styled("› ", Style::new().fg(style::BRAND)),
-            Span::raw(app.input.clone()),
-        ])
-    };
-    frame.render_widget(Paragraph::new(body).block(block), area);
-
-    if focused {
-        let typed = Span::raw(app.input.as_str()).width() as u16;
-        let cursor_x = inner.x.saturating_add(2).saturating_add(typed);
-        frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), inner.y));
+        // Horizontally-scrolling prompt: keep the cursor/tail visible on long input.
+        render_prompt_input(frame, block, area, &app.input, focused);
     }
 }
 
@@ -120,6 +114,9 @@ fn header_line(app: &App) -> Line<'static> {
             spans.push(Span::styled(format!("iteration {n}/{total} "), Style::new().fg(style::BRAND)));
         }
         spans.push(Span::styled(app.spinner_char(), Style::new().fg(style::BRAND)));
+        if let Some(elapsed) = app.active_elapsed() {
+            spans.push(Span::styled(format!("  {elapsed}"), Style::new().fg(style::PASS)));
+        }
         if app.stopping {
             spans.push(Span::styled("  stopping…", Style::new().fg(style::FAIL)));
         }
@@ -162,6 +159,29 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).areas(area);
     runs::render(frame, app, list);
     detail::render(frame, app, detail);
+}
+
+/// Render a single-line `› <input>` prompt inside `block` that **horizontally scrolls** so
+/// the end of the input (where you are typing) always stays visible, instead of overflowing
+/// off-screen and disappearing. Places the cursor only when `focused`.
+pub(super) fn render_prompt_input(frame: &mut Frame, block: Block, area: Rect, input: &str, focused: bool) {
+    let inner = block.inner(area);
+    let prefix: u16 = 2; // "› "
+    let typed = Span::raw(input).width().min(u16::MAX as usize) as u16;
+    let full = prefix.saturating_add(typed);
+    // Scroll the line left so the cursor sits at the right edge once the text overflows,
+    // keeping the last col free for the cursor.
+    let avail = inner.width.max(1);
+    let scroll_x = full.saturating_sub(avail.saturating_sub(1));
+    let line = Line::from(vec![
+        Span::styled("› ", Style::new().fg(style::BRAND)),
+        Span::raw(input.to_string()),
+    ]);
+    frame.render_widget(Paragraph::new(line).block(block).scroll((0, scroll_x)), area);
+    if focused {
+        let cursor_x = inner.x.saturating_add(full.saturating_sub(scroll_x));
+        frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), inner.y));
+    }
 }
 
 /// A bordered pane whose border and title light up when focused.

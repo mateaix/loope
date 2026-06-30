@@ -186,22 +186,9 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered()
         .title(Span::styled(title, Style::new().fg(color)))
         .border_style(Style::new().fg(color));
-    let inner = block.inner(area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("› ", Style::new().fg(style::BRAND)),
-            Span::raw(app.input.clone()),
-        ]))
-        .block(block),
-        area,
-    );
-    // Use the display width (CJK/fullwidth glyphs take two cells), matching exactly how
-    // ratatui lays out the text, so the cursor stays on the last typed character.
-    let prefix = Span::raw("› ").width() as u16;
-    let typed = Span::raw(app.input.as_str()).width().min(u16::MAX as usize) as u16;
-    let cursor_x = inner.x.saturating_add(prefix).saturating_add(typed);
-    let max_x = inner.x + inner.width.saturating_sub(1);
-    frame.set_cursor_position((cursor_x.min(max_x), inner.y));
+    // A horizontally-scrolling single-line prompt: long requirements stay visible at the
+    // cursor instead of overflowing off-screen.
+    super::render_prompt_input(frame, block, area, &app.input, true);
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
