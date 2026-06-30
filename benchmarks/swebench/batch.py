@@ -54,14 +54,22 @@ def is_test_path(p):
             or b == "conftest.py")
 
 
+def is_excluded(p):
+    # loope's own run artifacts + build/cache junk — never part of the fix
+    return (p.startswith(".loope/") or "__pycache__" in p or p.endswith((".pyc", ".pyo"))
+            or ".egg-info" in p or ".pytest_cache" in p
+            or p.startswith(("build/", "dist/", ".tox/", ".eggs/")))
+
+
 def extract_source_patch(work, base, inst):
-    # revert the gold test files, then diff everything except test-looking files
-    for f in test_files(inst):
+    # revert the gold test files, then diff everything except test / junk / artifact files
+    tf = test_files(inst)
+    for f in tf:
         sh(["git", "-C", work, "checkout", base, "--", f])
     sh(["git", "-C", work, "add", "-A"])
     staged = sh(["git", "-C", work, "diff", "--cached", "--name-only"]).stdout.split()
     for f in staged:
-        if is_test_path(f) or f in test_files(inst):
+        if is_test_path(f) or is_excluded(f) or f in tf:
             sh(["git", "-C", work, "restore", "--staged", "--", f])
     return sh(["git", "-C", work, "diff", "--cached"]).stdout
 
