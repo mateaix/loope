@@ -398,11 +398,13 @@ loope run --tui "..."      # run one specific requirement full-screen
   **self-checks the agent CLIs** (Claude / Codex / OpenCode) and shows each as `✓`
   installed or `✗` missing; `/doctor` re-checks. (`loope doctor` does the same from the
   shell.)
-- **Browser** (`loope tui`) — a run list on the left; the selected run's steps grouped by
-  iteration on the right; a preview pane showing the focused step's result, its diff, or
-  its transcript. When launched from `loope`, a **persistent prompt** sits at the bottom:
-  press `i` to type a new requirement (or `/command`) and run it without returning home —
-  type, watch, browse, type again.
+- **Browser** (`loope tui`) — a slim run list on the left; the selected run's steps grouped
+  by iteration on the right (sized to their content), and a **preview pane** that takes the
+  rest of the height to show the focused step's result, its diff, or its transcript as fully
+  as possible. When launched from `loope`, a **persistent prompt** sits at the bottom: press
+  `i` to type a new requirement (or `/command`) and run it without returning home — type,
+  watch, browse, type again. A long requirement **wraps** and the box **grows** as you type
+  (nothing scrolls off the side).
 - **Live** (`loope run --tui`) — the same layout with full `run` flags, updating as the
   loop runs: the active step streams the agent's **data flow** — each file read/edit, each
   command, the model in use, assistant messages, and a running token count — so you can
