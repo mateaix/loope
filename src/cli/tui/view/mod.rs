@@ -40,8 +40,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // A persistent prompt lives below the browser so you can launch a new run without
     // returning to the home screen.
     if app.can_launch && app.screen == Screen::Browse {
+        let prompt_h = wrapped_input_height(&app.input, body.width);
         let [main, prompt] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(body);
+            Layout::vertical([Constraint::Min(0), Constraint::Length(prompt_h)]).areas(body);
         draw_body(frame, app, main);
         render_prompt(frame, app, prompt);
     } else {
@@ -80,7 +81,8 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
             area,
         );
     } else {
-        // Horizontally-scrolling prompt: keep the cursor/tail visible on long input.
+        // Wrapping prompt: long input flows onto new lines and the box grows (see the
+        // caller's wrapped_input_height); nothing scrolls off the left.
         render_prompt_input(frame, block, area, &app.input, focused);
     }
 }
@@ -155,33 +157,104 @@ fn footer_line(app: &App) -> Line<'static> {
 }
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
-    let [list, detail] =
-        Layout::horizontal([Constraint::Percentage(32), Constraint::Percentage(68)]).areas(area);
+    let [list, detail] = Layout::horizontal([
+        Constraint::Length(runs_pane_width(area.width)),
+        Constraint::Min(0),
+    ])
+    .areas(area);
     runs::render(frame, app, list);
     detail::render(frame, app, detail);
 }
 
-/// Render a single-line `› <input>` prompt inside `block` that **horizontally scrolls** so
-/// the end of the input (where you are typing) always stays visible, instead of overflowing
-/// off-screen and disappearing. Places the cursor only when `focused`.
+/// Width (columns) for the left runs list: about a quarter of the row, clamped so it never
+/// balloons on a wide terminal nor collapses on a narrow one.
+pub(super) fn runs_pane_width(total: u16) -> u16 {
+    (total.saturating_mul(24) / 100).clamp(24, 42)
+}
+
+/// Outer height cap (rows incl. border) for the growing input box.
+pub(super) const INPUT_MAX_ROWS: u16 = 8;
+
+/// Display width of a char in terminal cells (wide CJK / fullwidth / emoji = 2).
+fn char_width(c: char) -> usize {
+    if c == '\t' {
+        return 4;
+    }
+    let u = c as u32;
+    let wide = matches!(u,
+        0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 |
+        0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 |
+        0xFFE0..=0xFFE6 | 0x1F300..=0x1FAFF | 0x20000..=0x3FFFD);
+    if wide { 2 } else { 1 }
+}
+
+/// Greedily wrap `text` into rows no wider than `width` cells (character wrap, unicode-aware —
+/// no word breaking, so the caret position is exact).
+fn wrap_by_width(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for ch in text.chars() {
+        let w = char_width(ch);
+        if cur_w + w > width && !cur.is_empty() {
+            rows.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        cur.push(ch);
+        cur_w += w;
+    }
+    rows.push(cur);
+    rows
+}
+
+/// Outer height (rows incl. border) the input box needs to show `input` wrapped in a box of
+/// `outer_width`, floored at 3 and capped at [`INPUT_MAX_ROWS`] (past which it scrolls).
+pub(super) fn wrapped_input_height(input: &str, outer_width: u16) -> u16 {
+    let inner_w = outer_width.saturating_sub(2).max(1);
+    let rows = wrap_by_width(&format!("› {input}"), inner_w).len().max(1) as u16;
+    rows.saturating_add(2).clamp(3, INPUT_MAX_ROWS)
+}
+
+/// Render a `› <input>` prompt inside `block` that **wraps** long input onto new lines and
+/// grows (the box height is chosen by the caller via [`wrapped_input_height`]); past the cap
+/// it scrolls vertically so the caret line stays visible — text never scrolls off the left.
+/// Places the cursor only when `focused`.
 pub(super) fn render_prompt_input(frame: &mut Frame, block: Block, area: Rect, input: &str, focused: bool) {
     let inner = block.inner(area);
-    let prefix: u16 = 2; // "› "
-    let typed = Span::raw(input).width().min(u16::MAX as usize) as u16;
-    let full = prefix.saturating_add(typed);
-    // Scroll the line left so the cursor sits at the right edge once the text overflows,
-    // keeping the last col free for the cursor.
-    let avail = inner.width.max(1);
-    let scroll_x = full.saturating_sub(avail.saturating_sub(1));
-    let line = Line::from(vec![
-        Span::styled("› ", Style::new().fg(style::BRAND)),
-        Span::raw(input.to_string()),
-    ]);
-    frame.render_widget(Paragraph::new(line).block(block).scroll((0, scroll_x)), area);
+    let rows = wrap_by_width(&format!("› {input}"), inner.width);
+    let total = rows.len() as u16;
+    // Scroll vertically only when the wrapped text is taller than the (capped) box.
+    let scroll_y = total.saturating_sub(inner.height.max(1));
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            if i == 0 {
+                // Tint the "› " prefix on the first row.
+                let rest: String = r.chars().skip(2).collect();
+                Line::from(vec![
+                    Span::styled("› ", Style::new().fg(style::BRAND)),
+                    Span::raw(rest),
+                ])
+            } else {
+                Line::from(Span::raw(r.clone()))
+            }
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll_y, 0)), area);
     if focused {
-        let cursor_x = inner.x.saturating_add(full.saturating_sub(scroll_x));
-        frame.set_cursor_position((cursor_x.min(inner.x + inner.width.saturating_sub(1)), inner.y));
+        let caret_row = total.saturating_sub(1);
+        let caret_col = rows.last().map(|r| line_width(r)).unwrap_or(0) as u16;
+        let x = inner.x.saturating_add(caret_col.min(inner.width.saturating_sub(1)));
+        let y = inner.y.saturating_add(caret_row.saturating_sub(scroll_y));
+        frame.set_cursor_position((x, y));
     }
+}
+
+/// Display width (cells) of a string.
+fn line_width(s: &str) -> usize {
+    s.chars().map(char_width).sum()
 }
 
 /// A bordered pane whose border and title light up when focused.
@@ -230,4 +303,30 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
         .flex(Flex::Center)
         .areas(h);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_pane_width_clamps() {
+        assert_eq!(runs_pane_width(80), 24); // 19 -> floor 24
+        assert_eq!(runs_pane_width(150), 36); // 24%
+        assert_eq!(runs_pane_width(400), 42); // 96 -> cap 42
+    }
+
+    #[test]
+    fn wrapped_input_height_grows_then_caps() {
+        assert_eq!(wrapped_input_height("", 40), 3); // empty -> minimum
+        assert_eq!(wrapped_input_height("add login", 40), 3); // one row
+        assert!(wrapped_input_height(&"x".repeat(120), 40) > 3); // wraps
+        assert_eq!(wrapped_input_height(&"x".repeat(1000), 40), INPUT_MAX_ROWS); // capped
+    }
+
+    #[test]
+    fn wrap_by_width_char_wraps_unicode() {
+        assert_eq!(wrap_by_width("abcde", 3), vec!["abc", "de"]);
+        assert_eq!(wrap_by_width("中文", 3).len(), 2); // wide chars = 2 cells
+    }
 }

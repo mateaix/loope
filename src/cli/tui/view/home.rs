@@ -25,13 +25,14 @@ pub fn render(frame: &mut Frame, app: &App) {
     let big = area.height >= 20;
     let banner_height = if big { 8 } else { 1 };
 
+    let input_h = super::wrapped_input_height(&app.input, area.width);
     let [banner, workspace, agents, status, body, input, footer] = Layout::vertical([
         Constraint::Length(banner_height),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(3),
+        Constraint::Length(input_h),
         Constraint::Length(1),
     ])
     .areas(area);

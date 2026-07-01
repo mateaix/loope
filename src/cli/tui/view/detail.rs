@@ -29,11 +29,34 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         area
     };
 
+    // Size the steps list to its content so the preview (the diff/result — the core content)
+    // takes the rest of the pane.
+    let steps_h = steps_pane_height(step_lines(detail), body.height);
     let [steps_area, preview_area] =
-        Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body);
+        Layout::vertical([Constraint::Length(steps_h), Constraint::Min(0)]).areas(body);
 
     render_steps(frame, app, detail, steps_area);
     preview::render(frame, app, detail, preview_area);
+}
+
+/// Lines the steps list renders: one per step, plus one iteration/design header per group.
+fn step_lines(detail: &super::super::model::RunDetail) -> u16 {
+    let mut groups = 0usize;
+    let mut last = usize::MAX;
+    for step in &detail.steps {
+        if step.iteration != last {
+            groups += 1;
+            last = step.iteration;
+        }
+    }
+    (detail.steps.len() + groups) as u16
+}
+
+/// Height (rows) for the steps list: its content plus its border, floored at 3 and capped at
+/// ~45% of the body so a long run can't starve the preview.
+pub(super) fn steps_pane_height(step_lines: u16, body_height: u16) -> u16 {
+    let cap = (body_height.saturating_mul(45) / 100).max(3);
+    step_lines.saturating_add(2).clamp(3, cap)
 }
 
 /// The "caught & fixed" card: ✗ flagged → ✎ fixed → ✓ passed.
@@ -185,6 +208,18 @@ fn count_blockers(message: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steps_pane_height_is_content_sized_and_capped() {
+        // 3 content lines (2 steps + 1 iteration header) + border = 5, under the 45% cap.
+        assert_eq!(steps_pane_height(3, 40), 5);
+        assert_eq!(steps_pane_height(0, 40), 3); // floored at 3
+        assert_eq!(steps_pane_height(100, 40), 18); // capped at 40*45/100
+        // A typical run leaves the preview strictly taller than the steps list.
+        let body = 40;
+        let steps = steps_pane_height(3, body);
+        assert!(body - steps > steps);
+    }
 
     fn reviewer(verdict: Option<&str>, message: &str) -> StepView {
         StepView {
