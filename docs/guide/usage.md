@@ -421,14 +421,14 @@ with their file tools (or pastes clipboard text when there's no image). In the
 
 | Key | Action |
 | --- | --- |
-| `↑`/`k`, `↓`/`j` | move selection |
-| `→`/`l`, `Enter` | open / focus the detail pane |
-| `←`/`h`, `Esc` | back / focus the run list |
-| `Tab` | switch pane |
+| `↑`/`k`, `↓`/`j` | move selection — or **scroll the preview** when it's focused |
+| `→`/`l`, `Enter` | drill in: runs → steps → preview |
+| `←`/`h`, `Esc` | step back out: preview → steps → run list |
+| `Tab` | cycle panes (list · steps · preview) |
 | `a` | toggle the agent activity stream (actions, output, reasoning, plans, messages, model, tokens) |
-| `d` / `t` | toggle the diff / transcript preview |
-| `g` / `G` | top / bottom |
-| `PgUp` / `PgDn` | scroll the preview |
+| `d` / `t` | open the diff / transcript preview (focuses it so arrows scroll) |
+| `g` / `G` | top / bottom (of the list, or the focused preview) |
+| `PgUp` / `PgDn`, mouse wheel | scroll the preview |
 | `r` | refresh the run list |
 | `?` | help overlay |
 | `q` / `Ctrl-C` | quit |
