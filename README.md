@@ -95,7 +95,10 @@ loope adapters                               # list supported adapters
 | `--max-iters N`          | Cap the implement → review → verify iterations (default `3`; `1` = single pass) |
 | `--show-diff`            | Print the cumulative diff of everything the run changed          |
 | `--workdir DIR`          | Source directory to run against (default: current directory)     |
-| `--in-place`             | Edit the working directory directly instead of a copied tree     |
+| `--in-place`             | Edit the working directory directly instead of a worktree/copy   |
+| `--copy`                 | Force a copied workspace instead of a git worktree branch        |
+| `--branch NAME`          | Name the result branch (default `loope/<run-id>`; git repos only) |
+| `--no-commit`            | Leave the worktree's changes uncommitted on the branch          |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`)    |
 | `--preset NAME`          | `claude-codex` \| `codex-claude` \| `claude-solo` \| `dual-review` \| `opencode-codex` |
 | `--implementer A`        | Override the implementer adapter (default `claude`)              |
@@ -117,17 +120,20 @@ loop halts with OpenCode's message) rather than a crash.
 
 `loope run` turns the plan into a real, inspectable run:
 
-1. A run directory is created under `.loope/runs/<run-id>/`.
-2. The working tree is seeded into `workspace/` (a copy by default; `--in-place`
-   edits the source directly).
+1. A run directory is created under `.loope/runs/<run-id>/` (and `.loope/` is auto-git-ignored).
+2. The working tree is materialized in `workspace/`: in a git repo, a **worktree** on a new
+   branch `loope/<run-id>`; otherwise (or with `--copy`) a **copy**. `--in-place` edits the
+   source directly.
 3. An optional design step runs once, then the loop **iterates** implement → review →
    verify. Each step runs through its adapter — each agent in its own private `home/`,
    the reviewer and verifier read-only — and its prompt, transcript, and result are saved.
 4. After each iteration Loope checks **convergence** (verification passed and no reviewer
    blocked). If not converged, the next iteration's implementer is fed the blockers and
    verifier failures to fix; the loop repeats until converged or `--max-iters`.
-5. A final `report.md`, `run.json`, and a cumulative `changes.diff` are written; `loope
-   apply <run-id>` lands the changes in your tree.
+5. A final `report.md`, `run.json`, and cumulative `changes.diff` are written. A worktree run
+   **commits** the result on `loope/<run-id>` (`git diff <base>..<branch>` to review, `git
+   merge` to land); a copy run lands via `loope apply <run-id>`. The run prints this guidance
+   at the end.
 
 ### Run directory layout
 

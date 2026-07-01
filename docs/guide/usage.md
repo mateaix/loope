@@ -80,8 +80,11 @@ loope show 0001             # print a run's report
 loope show 0001 --diff      # report + the unified diffs of what changed
 ```
 
-By default Loope operates on a **copy** of your project inside the run directory, so a
-real run never touches your real source unless you pass `--in-place`.
+By default, in a **git repo**, Loope runs on a **worktree** checked out on a new branch
+`loope/<run-id>`, so the results land as a real branch you review and merge — your working
+tree is never touched. Outside a git repo (or with `--copy`) it runs on a **copy** instead;
+`--in-place` edits your working tree directly. Either way `.loope/` is auto-git-ignored, so
+run artifacts never show up as unversioned files.
 
 ## Core concepts
 
@@ -179,7 +182,10 @@ Execute the full loop end to end and write a run directory.
 | `--show-diff` | After the run, print the cumulative diff of everything that changed |
 | `--tui` | Watch the run in a full-screen dashboard (needs a `--features tui` build) |
 | `--workdir DIR` | Source directory to run against (default: current directory) |
-| `--in-place` | Edit the working directory directly instead of a copied tree |
+| `--in-place` | Edit the working directory directly instead of a worktree/copy |
+| `--copy` | Force a copied workspace instead of a git worktree branch |
+| `--branch NAME` | Name the result branch (default `loope/<run-id>`; git repos only) |
+| `--no-commit` | Leave the worktree's changes uncommitted on the branch |
 | `--approve auto\|manual` | `manual` confirms before launching any agent (default `auto`) |
 | `--preset NAME` | A named adapter combination (see [Presets](#presets)) |
 | `--implementer A` | Override the implementer adapter (default `claude`) |
@@ -283,12 +289,13 @@ prefix (`0007`). Everything about a run lives under `.loope/runs/<run-id>/` (git
 .loope/runs/0001-add-login/
   plan.md                 the generated loop plan
   report.md               final loop report (steps grouped by iteration, outcome)
-  run.json                machine-readable run record (iterations, stop_reason, converged)
+  run.json                machine-readable run record (iterations, stop_reason, branch, base)
   changes.diff            the run's cumulative diff (original source → final workspace)
   changed-files.txt       the cumulative changed-file listing (used by `loope apply`)
   highlight               the "caught & fixed" card (only when a review caught a blocker)
   design-contract.md      the Design Contract (with --design or `loope design`)
-  workspace/              the working tree the agents read and edit (a copy by default)
+  workspace/              the working tree the agents read and edit (a git worktree by
+                          default, else a copy)
   agents/                 one numbered directory per step, across all iterations
     01-implementer-claude/
       home/               this step's private CLI config/session dir
@@ -302,6 +309,28 @@ prefix (`0007`). Everything about a run lives under `.loope/runs/<run-id>/` (git
     03-implementer-claude/   the next iteration's fix turn (its own directory)
     ...
 ```
+
+### Taking the results
+
+Every run ends by telling you where its output is and how to take it:
+
+- **Worktree run** (default in a git repo): the changes are committed on branch
+  `loope/<run-id>`. Review, merge, or discard them with plain git:
+
+  ```bash
+  git diff <base>..loope/<run-id>     # review what the loop produced
+  git merge loope/<run-id>            # land it (or open a PR from the branch)
+  git worktree remove .loope/runs/<run-id>/workspace && git branch -D loope/<run-id>
+  ```
+
+  `--no-commit` leaves the changes uncommitted in the worktree; `--branch NAME` overrides the
+  branch name. A dirty source tree warns that the branch is cut from `HEAD` (commit/stash
+  first, or use `--in-place`).
+- **Copy run** (non-git, or `--copy`): the changes sit in the run's `workspace/`. Land them
+  with `loope apply <run-id>`.
+- **`--in-place`**: the changes are already in your working tree.
+
+`loope show <run-id>` reprints the same guidance for a past run.
 
 Agent directories are numbered by step id and span every iteration, so each iteration's
 implement, review, and verify turns keep separate, complete records.

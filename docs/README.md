@@ -38,7 +38,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Desktop hub (a graphical app: multi-agent management + visual execution rendering) — *spec-first, not yet built*
 - Loop optimization (verify-first review, stall-stop, structured repair feedback) — *spec-first, from benchmark evidence*
 - Rich execution rendering (deeper Claude/Codex stream parsing: reasoning, output, plans) — *spec-first*
-- Result landing (git worktree branches: results land on a `loope/<id>` branch, `.loope/` auto-ignored) — *spec-first*
+- Result landing (git worktree branches: results land on a `loope/<id>` branch, `.loope/` auto-ignored)
 - Liquid Glass design (the desktop visual language + TUI→GUI surface mapping) — *design spec*
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
