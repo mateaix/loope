@@ -40,6 +40,7 @@ Each capability ships spec-first as a `specs/` + `plans/` pair:
 - Rich execution rendering (deeper Claude/Codex stream parsing: reasoning, output, plans) — *spec-first*
 - Result landing (git worktree branches: results land on a `loope/<id>` branch, `.loope/` auto-ignored)
 - TUI layout refinement (narrower runs list, preview-dominant detail, wrapping input)
+- TUI preview scroll (scrollable diff/result via arrows + wheel, bounded, with an affordance) — *spec-first*
 - Liquid Glass design (the desktop visual language + TUI→GUI surface mapping) — *design spec*
 
 > **Maintenance:** when a feature, command, flag, preset, adapter, env var, exit code, or
