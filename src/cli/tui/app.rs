@@ -21,6 +21,8 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 pub enum Focus {
     Runs,
     Detail,
+    /// The preview pane (diff / result / transcript / activity) — arrows scroll it.
+    Preview,
     /// The persistent prompt at the bottom — type a new requirement without leaving.
     Input,
 }
@@ -80,6 +82,9 @@ pub struct App {
     pub focus: Focus,
     pub preview: Preview,
     pub preview_scroll: u16,
+    /// Max scroll for the current preview (content rows − viewport), recorded by the renderer
+    /// via interior mutability so scroll actions can clamp to the real bottom.
+    preview_max_scroll: std::cell::Cell<u16>,
     pub show_help: bool,
     pub should_quit: bool,
     // Live mode: populated from observer messages.
@@ -161,6 +166,7 @@ impl App {
             focus: Focus::Runs,
             preview: Preview::Result,
             preview_scroll: 0,
+            preview_max_scroll: std::cell::Cell::new(0),
             show_help: false,
             should_quit: false,
             live: false,
@@ -538,7 +544,13 @@ impl App {
             Action::Help => self.show_help = true,
             Action::Tab => self.toggle_focus(),
             Action::Right | Action::Enter => self.enter_detail(),
-            Action::Left | Action::Back => self.focus = Focus::Runs,
+            Action::Left | Action::Back => {
+                // Step back one focus level: preview → steps → runs.
+                self.focus = match self.focus {
+                    Focus::Preview => Focus::Detail,
+                    _ => Focus::Runs,
+                };
+            }
             Action::Up => self.move_up(),
             Action::Down => self.move_down(),
             Action::Top => self.move_to_edge(true),
@@ -546,23 +558,47 @@ impl App {
             Action::ToggleDiff => self.set_preview(Preview::Diff),
             Action::ToggleTranscript => self.set_preview(Preview::Transcript),
             Action::ToggleActivity => self.set_preview(Preview::Activity),
-            Action::PageUp => self.preview_scroll = self.preview_scroll.saturating_sub(10),
-            Action::PageDown => self.preview_scroll = self.preview_scroll.saturating_add(10),
+            // Page keys always scroll the preview (bounded), regardless of focus.
+            Action::PageUp => self.scroll_preview(-10),
+            Action::PageDown => self.scroll_preview(10),
             Action::Refresh => self.refresh(),
         }
     }
 
+    /// Drill inward: runs → steps → preview (so `→`/Enter reaches the scrollable preview).
     fn enter_detail(&mut self) {
-        if self.detail.as_ref().is_some_and(|d| !d.steps.is_empty()) {
-            self.focus = Focus::Detail;
+        match self.focus {
+            Focus::Runs if self.detail.as_ref().is_some_and(|d| !d.steps.is_empty()) => {
+                self.focus = Focus::Detail;
+            }
+            Focus::Detail => self.focus = Focus::Preview,
+            _ => {}
         }
     }
 
     fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             Focus::Runs => Focus::Detail,
-            Focus::Detail | Focus::Input => Focus::Runs,
+            Focus::Detail => Focus::Preview,
+            Focus::Preview | Focus::Input => Focus::Runs,
         };
+    }
+
+    /// Scroll the preview by `delta` lines, clamped to `[0, max_scroll]`.
+    fn scroll_preview(&mut self, delta: i32) {
+        let max = self.preview_max_scroll.get() as i32;
+        self.preview_scroll = (self.preview_scroll as i32 + delta).clamp(0, max) as u16;
+    }
+
+    /// Scroll the preview by `delta` lines (the mouse wheel handler; bounded).
+    pub fn scroll_preview_lines(&mut self, delta: i32) {
+        self.scroll_preview(delta);
+    }
+
+    /// Record the preview's max scroll (content rows − viewport height); called by the
+    /// renderer each frame so scroll actions and the affordance can use it.
+    pub fn set_preview_extent(&self, max: u16) {
+        self.preview_max_scroll.set(max);
     }
 
     fn move_up(&mut self) {
@@ -575,6 +611,7 @@ impl App {
                 self.detail_selected -= 1;
                 self.preview_scroll = 0;
             }
+            Focus::Preview => self.scroll_preview(-1),
             _ => {}
         }
     }
@@ -589,6 +626,7 @@ impl App {
                 self.detail_selected += 1;
                 self.preview_scroll = 0;
             }
+            Focus::Preview => self.scroll_preview(1),
             _ => {}
         }
     }
@@ -603,14 +641,26 @@ impl App {
                 self.detail_selected = if top { 0 } else { self.step_count().saturating_sub(1) };
                 self.preview_scroll = 0;
             }
+            Focus::Preview => {
+                self.preview_scroll = if top { 0 } else { self.preview_max_scroll.get() };
+            }
             Focus::Input => {}
         }
     }
 
-    /// Toggle a preview kind on, or back to the result when pressed again.
+    /// Toggle a preview kind on, or back to the result when pressed again. A scrollable
+    /// preview grabs focus so arrows scroll it immediately; toggling back to the short result
+    /// returns focus to the step list.
     fn set_preview(&mut self, kind: Preview) {
         self.preview = if self.preview == kind { Preview::Result } else { kind };
         self.preview_scroll = 0;
+        if self.detail.is_some() {
+            self.focus = if self.preview == Preview::Result {
+                Focus::Detail
+            } else {
+                Focus::Preview
+            };
+        }
     }
 
     fn refresh(&mut self) {
@@ -699,4 +749,52 @@ fn abbrev_path(path: &Path) -> String {
         }
     }
     shown
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_scroll_is_bounded_and_reaches_ends() {
+        let dir = std::env::temp_dir().join(format!("loope-app-scroll-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut app = App::new(&dir);
+        app.focus = Focus::Preview;
+        app.set_preview_extent(5);
+
+        for _ in 0..20 {
+            app.update(Action::Down); // scrolls a line each, clamped at the bottom
+        }
+        assert_eq!(app.preview_scroll, 5);
+        app.update(Action::Top);
+        assert_eq!(app.preview_scroll, 0);
+        app.update(Action::Bottom);
+        assert_eq!(app.preview_scroll, 5); // G reaches the true bottom
+        for _ in 0..20 {
+            app.update(Action::Up);
+        }
+        assert_eq!(app.preview_scroll, 0);
+        app.scroll_preview_lines(100); // the mouse wheel is bounded too
+        assert_eq!(app.preview_scroll, 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_a_scrollable_preview_focuses_it() {
+        let dir = std::env::temp_dir().join(format!("loope-app-focus-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut app = App::new(&dir);
+        // With no detail loaded, focus does not jump (nothing to scroll).
+        app.update(Action::ToggleDiff);
+        assert_eq!(app.preview, Preview::Diff);
+        assert_eq!(app.focus, Focus::Runs);
+        // With a detail present, opening the diff focuses the preview; Back steps out to Detail.
+        app.detail = Some(RunDetail { id: "x".into(), ..Default::default() });
+        app.update(Action::ToggleTranscript);
+        assert_eq!(app.focus, Focus::Preview);
+        app.update(Action::Back);
+        assert_eq!(app.focus, Focus::Detail);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

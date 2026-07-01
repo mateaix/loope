@@ -25,7 +25,24 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEventKind,
+};
+use ratatui::crossterm::execute;
+
+/// Enter the alternate screen and enable mouse capture (so the wheel scrolls the preview).
+fn init_terminal() -> DefaultTerminal {
+    let terminal = ratatui::init();
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    terminal
+}
+
+/// Disable mouse capture and restore the terminal.
+fn restore_terminal() {
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    ratatui::restore();
+}
 
 use loope::adapter::Invoker;
 use loope::engine::workspace::RunWorkspace;
@@ -44,17 +61,17 @@ const TICK: Duration = Duration::from_millis(80);
 pub fn run_home(cwd: &Path, dry_run: bool) -> io::Result<()> {
     let session = Session::new(cwd.to_path_buf());
     let mut app = App::home(&session.base, dry_run);
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal();
     let result = app_loop(&mut terminal, &mut app, Some(&session), None, None, None);
-    ratatui::restore();
+    restore_terminal();
     result
 }
 
 /// Browse the runs under `runs_dir` (`loope tui`); no new runs can be launched.
 pub fn run_browser(runs_dir: &Path) -> io::Result<()> {
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal();
     let result = app_loop(&mut terminal, &mut App::new(runs_dir), None, None, None, None);
-    ratatui::restore();
+    restore_terminal();
     result
 }
 
@@ -80,7 +97,7 @@ pub fn run_live(
         let _ = execute_loop(&config, &workspace, invoker.as_ref(), Some(&observer));
     });
 
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal();
     let result = app_loop(
         &mut terminal,
         &mut app,
@@ -89,7 +106,7 @@ pub fn run_live(
         Some(worker),
         Some(cancel),
     );
-    ratatui::restore();
+    restore_terminal();
     result
 }
 
@@ -187,10 +204,17 @@ fn app_loop(
     while !app.should_quit {
         terminal.draw(|frame| view::draw(frame, app))?;
 
-        if event::poll(TICK)?
-            && let Event::Key(key) = event::read()?
-        {
-            handle_key(app, key, session.is_some());
+        if event::poll(TICK)? {
+            match event::read()? {
+                Event::Key(key) => handle_key(app, key, session.is_some()),
+                // The mouse wheel scrolls the preview (bounded), regardless of focus.
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::ScrollDown => app.scroll_preview_lines(3),
+                    MouseEventKind::ScrollUp => app.scroll_preview_lines(-3),
+                    _ => {}
+                },
+                _ => {}
+            }
         }
 
         // A stop request (Esc while live) sets the shared cancel flag; the worker halts at

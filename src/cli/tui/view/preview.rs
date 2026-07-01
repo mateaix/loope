@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::super::app::{App, Preview};
+use super::super::app::{App, Focus, Preview};
 use super::super::model::{RunDetail, StepView};
 use super::super::style;
 use super::activity::activity_line;
@@ -30,17 +30,57 @@ pub fn render(frame: &mut Frame, app: &App, detail: &RunDetail, area: Rect) {
         Preview::Activity => ("activity", activity_text(detail, app.detail_selected)),
     };
 
-    let block = Block::bordered()
-        .title(Span::styled(format!(" {label} "), Style::new().fg(style::DIM)))
-        .border_style(Style::new().fg(style::DIM));
+    // Bound scrolling to the content: record the max scroll for the key handling, and clamp
+    // the scroll actually rendered so it can never run past the last line.
+    let inner_w = area.width.saturating_sub(2).max(1);
+    let viewport = area.height.saturating_sub(2);
+    let content_rows = content_height(&text, inner_w, app.preview == Preview::Diff);
+    let max_scroll = content_rows.saturating_sub(viewport);
+    app.set_preview_extent(max_scroll);
+    let scroll = app.preview_scroll.min(max_scroll);
 
-    let mut paragraph = Paragraph::new(text).block(block).scroll((app.preview_scroll, 0));
+    let focused = app.focus == Focus::Preview;
+    let color = if focused { style::BRAND } else { style::DIM };
+    let title = match scroll_indicator(scroll, max_scroll) {
+        Some(ind) => format!(" {label}  {ind} "),
+        None => format!(" {label} "),
+    };
+    let block = Block::bordered()
+        .title(Span::styled(title, Style::new().fg(color)))
+        .border_style(Style::new().fg(color));
+
+    let mut paragraph = Paragraph::new(text).block(block).scroll((scroll, 0));
     // Wrap prose (result / transcript / activity) so long lines stay visible; never wrap
     // the diff, where columns must line up.
     if app.preview != Preview::Diff {
         paragraph = paragraph.wrap(Wrap { trim: false });
     }
     frame.render_widget(paragraph, area);
+}
+
+/// Rows the preview content occupies: the raw line count for the (unwrapped) diff, else the
+/// wrapped row count for the given inner width.
+fn content_height(text: &Text, inner_w: u16, is_diff: bool) -> u16 {
+    if is_diff {
+        text.lines.len() as u16
+    } else {
+        text.lines
+            .iter()
+            .map(|l| {
+                let w = l.width() as u16;
+                (w / inner_w + u16::from(!w.is_multiple_of(inner_w))).max(1)
+            })
+            .sum()
+    }
+}
+
+/// A compact scroll-position affordance for the border, or `None` when nothing scrolls.
+pub(super) fn scroll_indicator(scroll: u16, max: u16) -> Option<String> {
+    if max == 0 {
+        return None;
+    }
+    let pct = (scroll as u32 * 100 / max as u32) as u16;
+    Some(format!("↕ {pct}%"))
 }
 
 /// The live data stream of the currently-running step: a header (model + tokens) over the
@@ -210,4 +250,17 @@ fn color_diff(diff: &str) -> Text<'static> {
         })
         .collect::<Vec<_>>();
     Text::from(lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_indicator_shows_position() {
+        assert_eq!(scroll_indicator(0, 0), None); // nothing to scroll
+        assert_eq!(scroll_indicator(0, 10).as_deref(), Some("↕ 0%"));
+        assert_eq!(scroll_indicator(5, 10).as_deref(), Some("↕ 50%"));
+        assert_eq!(scroll_indicator(10, 10).as_deref(), Some("↕ 100%"));
+    }
 }
